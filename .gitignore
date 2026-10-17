@@ -1,0 +1,15 @@
+# 本地截图与调试产物（headless 探针输出）
+/*.png
+/*.jpg
+
+# DSH session 日志：体积大且含本地绝对路径
+dsh_session/
+*.jsonl
+
+# 探针脚本的本地路径覆盖
+tools/*.local.*
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store

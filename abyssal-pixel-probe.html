@@ -1,0 +1,4527 @@
+<!doctype html>
+<!--
+  ABYSSAL PIXEL PROBE — P0–P5 改动摘要
+  P0 音频可用性：Sound.toggle() 在 resume 失败或 ctx 非 running 时返回 null；
+     Sound.ensureRunning() 供 onPointerDown 唤醒 bfcache 后的上下文；
+     toggleAudio() 失败时保持 OFF 并记录「音频总线不可用」。
+  P1 深度声景：Sound 保存 lowpass / noiseGain / 两枚 drone 引用；
+     Sound.setZone(zoneId) 以 setTargetAtTime 切换四层截止频率、基频与噪声；
+     updateDepth 分区变化与 init 初始化时调用。
+  P2 异常归档：state.anomaly.logged；updateSonar 命中异常时写入 alert 日志；
+     drawRadar 在异常结束后保留橙色固定标记。
+  P3 静默听感：updateSignals 中 hold 衰减非静默 2.2/s、静默 1.0/s；toggleSilent
+     保留光学 hold；Sound.setQuiet 压低 ambient、将 lowpass 压到 45Hz，并淡入静默生物声层。
+  P4 深度代价：updateSignals depthPenalty；lightExposureAt 深水半径 ×0.9；
+     fireSonar 深水冷却 1.2s；activateSignal 对 >160M 且无声呐确认的接触先拦截。
+  P5 全归档事件：activateSignal 六件归档时触发 3s 雷达全环、归档信号闪烁、
+     低频确认和弦与叙事日志。
+  FIX 深潜渲染：drawMid 的 HADAL 装饰改用 state.W/state.H，修复下潜至
+     1000m 后触发的 ReferenceError。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#05080d">
+<title>ABYSSAL PIXEL PROBE · 深渊像素探勘器</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%2305080d'/%3E%3Cpath d='M4 5h8v6H4z' fill='none' stroke='%235eead4'/%3E%3Cpath d='M6 7h4v2H6z' fill='%23a7f3d0'/%3E%3Cpath d='M12 7h2v2h-2z' fill='%235eead4'/%3E%3C/svg%3E">
+<style>
+:root{
+  --void:#05080d;
+  --pitch:#08121c;
+  --abyss:#0a1622;
+  --deep:#102a3c;
+  --trench:#143744;
+  --shelf:#1b4a5a;
+  --current:#2e7d8a;
+  --glow:#5eead4;
+  --haze:#a7f3d0;
+  --foam:#e6f7ff;
+  --alert:#fb923c;
+  --ember:#b6532e;
+  --mono:ui-monospace,"Cascadia Mono","SFMono-Regular",Consolas,"Liberation Mono","Noto Sans Mono CJK SC","Microsoft YaHei",monospace;
+  --hair:rgba(46,125,138,.48);
+  --hair-dim:rgba(46,125,138,.24);
+  --panel:rgba(5,8,13,.74);
+  --panel-grid:repeating-linear-gradient(0deg,rgba(46,125,138,.035) 0 1px,transparent 1px 7px);
+}
+*,
+*::before,
+*::after{box-sizing:border-box;}
+html,
+body{width:100%;height:100%;margin:0;background:var(--void);}
+body{
+  overflow:hidden;
+  overscroll-behavior:none;
+  color:var(--haze);
+  font-family:var(--mono);
+  font-size:12px;
+  line-height:1.4;
+  -webkit-font-smoothing:antialiased;
+  text-rendering:geometricPrecision;
+  color-scheme:dark;
+  user-select:none;
+  -webkit-tap-highlight-color:transparent;
+}
+::selection{background:var(--current);color:var(--void);}
+button,
+input,
+textarea{font:inherit;}
+button{
+  appearance:none;
+  margin:0;
+  padding:0;
+  border:0;
+  border-radius:0;
+  background:none;
+  color:inherit;
+  letter-spacing:inherit;
+  text-align:inherit;
+  cursor:pointer;
+}
+button:focus-visible,
+[tabindex]:focus-visible{
+  outline:1px solid var(--foam);
+  outline-offset:3px;
+}
+svg{display:block;}
+.sr-only{
+  position:absolute!important;
+  width:1px!important;
+  height:1px!important;
+  padding:0!important;
+  margin:-1px!important;
+  overflow:hidden!important;
+  clip:rect(0,0,0,0)!important;
+  white-space:nowrap!important;
+  border:0!important;
+}
+.machine{position:fixed;inset:0;isolation:isolate;background:var(--void);}
+.stage{
+  position:fixed;
+  z-index:1;
+  pointer-events:none;
+  overflow:hidden;
+  background:var(--void);
+}
+.screen{
+  position:relative;
+  width:100%;
+  height:100%;
+  overflow:hidden;
+  transform-origin:50% 50%;
+  will-change:transform;
+}
+#scene{
+  display:block;
+  width:100%;
+  height:100%;
+  pointer-events:none;
+  image-rendering:-moz-crisp-edges;
+  image-rendering:crisp-edges;
+  image-rendering:pixelated;
+  background:var(--void);
+}
+.labels{
+  position:fixed;
+  z-index:7;
+  pointer-events:none;
+  overflow:hidden;
+}
+.interaction{
+  position:fixed;
+  inset:0;
+  z-index:5;
+  touch-action:none;
+  cursor:none;
+  background:transparent;
+}
+.hud{
+  position:fixed;
+  inset:0;
+  z-index:10;
+  pointer-events:none;
+}
+.crt{
+  position:fixed;
+  inset:0;
+  z-index:30;
+  overflow:hidden;
+  pointer-events:none;
+}
+.crt::before{
+  content:"";
+  position:absolute;
+  inset:0;
+  background:repeating-linear-gradient(0deg,rgba(5,8,13,0) 0 2px,rgba(5,8,13,.17) 2px 3px);
+  opacity:.62;
+}
+.crt::after{
+  content:"";
+  position:absolute;
+  inset:0;
+  background:radial-gradient(ellipse at 50% 46%,transparent 48%,rgba(5,8,13,.28) 76%,rgba(5,8,13,.68) 100%);
+}
+.scanband{
+  position:absolute;
+  left:0;
+  right:0;
+  top:-18%;
+  height:16%;
+  background:linear-gradient(to bottom,rgba(167,243,208,0),rgba(167,243,208,.028),rgba(167,243,208,0));
+  animation:scanband 18s linear infinite;
+}
+.screen-edge{
+  position:fixed;
+  inset:0;
+  z-index:29;
+  pointer-events:none;
+  box-shadow:inset 1px 0 0 rgba(94,234,212,.14),inset -1px 0 0 rgba(251,146,60,.065);
+}
+.masthead{
+  position:absolute;
+  top:calc(16px + env(safe-area-inset-top));
+  left:20px;
+  right:20px;
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:18px;
+  pointer-events:none;
+}
+.brand{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  min-width:0;
+}
+.brand-mark{
+  flex:0 0 auto;
+  width:25px;
+  height:25px;
+  color:var(--glow);
+  filter:drop-shadow(0 0 7px rgba(94,234,212,.18));
+}
+.brand-title{
+  margin:0;
+  color:var(--foam);
+  font-size:13px;
+  line-height:1.05;
+  font-weight:600;
+  letter-spacing:.21em;
+  white-space:nowrap;
+  text-shadow:1px 0 0 rgba(94,234,212,.16),-1px 0 0 rgba(251,146,60,.06);
+}
+.brand-title span{color:var(--current);font-weight:400;}
+.brand-sub{
+  margin-top:5px;
+  color:var(--current);
+  font-size:7px;
+  line-height:1;
+  letter-spacing:.17em;
+  white-space:nowrap;
+}
+.brand-sub i{font-style:normal;color:var(--shelf);}
+.mast-meta{
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:15px;
+  padding-top:4px;
+  color:var(--shelf);
+  font-size:7px;
+  line-height:1;
+  letter-spacing:.14em;
+  white-space:nowrap;
+}
+.mast-meta .live{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  color:var(--glow);
+}
+.mast-meta .live i{
+  width:4px;
+  height:4px;
+  background:var(--glow);
+  box-shadow:0 0 6px rgba(94,234,212,.55);
+  animation:status-breathe 3.2s steps(2,end) infinite;
+}
+.mast-meta .utc b{font-weight:400;color:var(--shelf);}
+.mast-meta .utc span{color:var(--haze);}
+.cam-label{
+  position:absolute;
+  top:calc(21px + env(safe-area-inset-top));
+  left:50%;
+  display:flex;
+  align-items:center;
+  gap:9px;
+  color:var(--shelf);
+  font-size:7px;
+  line-height:1;
+  letter-spacing:.16em;
+  white-space:nowrap;
+  transform:translateX(-50%);
+  pointer-events:none;
+}
+.cam-label i{display:block;width:25px;height:1px;background:var(--hair-dim);}
+.cam-label .live{display:inline-flex;align-items:center;gap:5px;color:var(--glow);}
+.cam-label .live b{width:3px;height:3px;background:var(--glow);animation:status-breathe 2.5s steps(2,end) infinite;}
+.panel{
+  position:absolute;
+  min-width:0;
+  padding:9px 11px 10px;
+  background-color:var(--panel);
+  background-image:var(--panel-grid);
+  border:1px solid var(--hair);
+  box-shadow:inset 0 0 0 1px rgba(5,8,13,.54);
+  pointer-events:none;
+}
+/* The glass is part of the scene: only real controls stop the probe lamp. */
+.panel button{pointer-events:auto;}
+.panel::before,
+.panel::after{
+  content:"";
+  position:absolute;
+  width:6px;
+  height:6px;
+  pointer-events:none;
+}
+.panel::before{
+  top:-1px;
+  left:-1px;
+  border-top:1px solid var(--glow);
+  border-left:1px solid var(--glow);
+}
+.panel::after{
+  right:-1px;
+  bottom:-1px;
+  border-right:1px solid var(--glow);
+  border-bottom:1px solid var(--glow);
+}
+.panel-tag{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  margin-bottom:7px;
+  padding-bottom:5px;
+  border-bottom:1px solid var(--hair-dim);
+  color:var(--current);
+  font-size:7px;
+  line-height:1;
+  letter-spacing:.16em;
+  text-transform:uppercase;
+}
+.panel-tag span:last-child{color:var(--shelf);white-space:nowrap;}
+.telemetry{
+  top:calc(76px + env(safe-area-inset-top));
+  left:20px;
+  width:376px;
+  padding-bottom:9px;
+}
+.tele-grid{
+  display:grid;
+  grid-template-columns:1.52fr .82fr .96fr 1fr;
+  align-items:end;
+}
+.tele{
+  min-width:0;
+  padding:0 8px;
+  border-left:1px solid var(--hair-dim);
+}
+.tele:first-child{padding-left:0;border-left:0;}
+.tele:last-child{padding-right:0;}
+.tele-label{
+  display:flex;
+  justify-content:space-between;
+  gap:3px;
+  color:var(--current);
+  font-size:7px;
+  line-height:1;
+  letter-spacing:.1em;
+  white-space:nowrap;
+}
+.tele-label em{
+  color:var(--shelf);
+  font-style:normal;
+  letter-spacing:.04em;
+}
+.tele-value{
+  margin-top:6px;
+  color:var(--haze);
+  font-size:14px;
+  line-height:1;
+  font-variant-numeric:tabular-nums;
+  letter-spacing:.035em;
+  white-space:nowrap;
+}
+.tele-value small{
+  margin-left:2px;
+  color:var(--current);
+  font-size:7px;
+  letter-spacing:.04em;
+}
+.tele-depth .tele-value{
+  color:var(--foam);
+  font-size:24px;
+  letter-spacing:.01em;
+  text-shadow:0 0 9px rgba(94,234,212,.17);
+}
+.tele-depth .tele-value small{font-size:8px;color:var(--glow);}
+.tele-sub{
+  margin-top:5px;
+  overflow:hidden;
+  color:var(--current);
+  font-size:7px;
+  line-height:1.1;
+  letter-spacing:.07em;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.tele-sub b{font-weight:400;color:var(--haze);}
+.tele-depth .tele-sub{color:var(--glow);}
+.tele-depth .tele-sub span{color:var(--haze);}
+.signal-meter{
+  display:flex;
+  gap:2px;
+  margin-top:6px;
+  height:3px;
+}
+.signal-meter i{display:block;flex:1;background:rgba(27,74,90,.6);}
+.signal-meter i.on{background:var(--glow);}
+.signal-meter i.hot{background:var(--foam);}
+.tape{
+  position:relative;
+  display:flex;
+  height:4px;
+  margin-top:9px;
+  background:var(--abyss);
+  border-top:1px solid var(--hair-dim);
+  border-bottom:1px solid rgba(5,8,13,.7);
+  gap:1px;
+}
+.tape i{display:block;min-width:1px;background:var(--abyss);}
+.tape i.on{background:var(--shelf);}
+.tape i.now{background:var(--current);}
+.tape b{
+  position:absolute;
+  top:-4px;
+  bottom:-4px;
+  left:0;
+  width:1px;
+  background:var(--foam);
+  box-shadow:0 0 7px rgba(94,234,212,.7);
+}
+.tape-ticks{
+  position:relative;
+  height:10px;
+  margin-top:2px;
+  color:var(--shelf);
+  font-size:6px;
+  line-height:1;
+  letter-spacing:.05em;
+}
+.tape-ticks span{position:absolute;top:2px;transform:translateX(-50%);white-space:nowrap;}
+.tape-ticks span:first-child{transform:none;}
+.tape-ticks span:last-child{transform:translateX(-100%);}
+.status{
+  top:calc(76px + env(safe-area-inset-top));
+  right:20px;
+  width:269px;
+  padding-bottom:9px;
+}
+.status-line{
+  display:flex;
+  align-items:baseline;
+  justify-content:space-between;
+  gap:12px;
+  min-width:0;
+  padding:3px 0;
+  font-size:8px;
+  line-height:1.25;
+}
+.status-line .k{
+  flex:0 0 auto;
+  color:var(--shelf);
+  font-size:7px;
+  letter-spacing:.14em;
+}
+.status-line .v{
+  overflow:hidden;
+  color:var(--haze);
+  font-size:9px;
+  letter-spacing:.08em;
+  text-align:right;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.status-line .v.mode{
+  color:var(--glow);
+  font-size:9px;
+  letter-spacing:.12em;
+}
+.status-line .v.mode.quiet{color:var(--shelf);}
+.status-line .v.mode.ping{color:var(--foam);}
+.status-line .v.mode.alert{color:var(--alert);}
+.led-row{
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:8px;
+  margin-top:5px;
+  padding-top:7px;
+  border-top:1px solid var(--hair-dim);
+}
+.led{
+  display:flex;
+  align-items:center;
+  gap:5px;
+  min-width:0;
+  color:var(--shelf);
+  font-size:7px;
+  line-height:1;
+  letter-spacing:.08em;
+  white-space:nowrap;
+}
+.led i{
+  flex:0 0 auto;
+  width:4px;
+  height:4px;
+  background:var(--abyss);
+  box-shadow:inset 0 0 0 1px rgba(46,125,138,.44);
+}
+.led i.on{background:var(--glow);box-shadow:0 0 6px rgba(94,234,212,.5);}
+.led i.soft{background:var(--shelf);box-shadow:none;}
+.led i.alert{background:var(--alert);box-shadow:0 0 6px rgba(251,146,60,.4);}
+.led b{
+  overflow:hidden;
+  margin-left:auto;
+  color:var(--current);
+  font-size:6px;
+  font-weight:400;
+  text-overflow:ellipsis;
+}
+.depth-controls{
+  display:flex;
+  gap:5px;
+  margin-top:8px;
+}
+.depth-btn{
+  flex:1;
+  min-width:0;
+  height:25px;
+  padding:0 6px;
+  border:1px solid var(--hair-dim);
+  background:rgba(8,18,28,.5);
+  color:var(--current);
+  font-size:7px;
+  line-height:1;
+  letter-spacing:.09em;
+  white-space:nowrap;
+}
+.depth-btn span{color:var(--glow);font-size:8px;margin-right:3px;}
+.depth-btn em{font-style:normal;color:var(--shelf);font-size:6px;margin-left:3px;}
+.depth-btn:hover{background:rgba(27,74,90,.38);color:var(--haze);}
+.depth-btn:active{transform:translateY(1px);}
+.depth-btn[aria-disabled="true"]{opacity:.38;cursor:not-allowed;}
+.log{
+  left:20px;
+  bottom:calc(56px + env(safe-area-inset-bottom));
+  width:430px;
+  padding-bottom:8px;
+}
+.log-list{
+  display:flex;
+  flex-direction:column;
+  justify-content:flex-end;
+  height:106px;
+  margin:0;
+  padding:0;
+  overflow:hidden;
+  list-style:none;
+}
+.log-item{
+  display:grid;
+  grid-template-columns:49px 29px minmax(0,1fr);
+  gap:6px;
+  padding:2px 0;
+  color:var(--haze);
+  font-size:9px;
+  line-height:1.38;
+  letter-spacing:.015em;
+  opacity:.82;
+}
+.log-item:last-child{opacity:1;}
+.log-time{color:var(--shelf);font-size:7px;line-height:1.65;font-variant-numeric:tabular-nums;}
+.log-tag{color:var(--glow);font-size:7px;line-height:1.65;letter-spacing:.08em;}
+.log-text{min-width:0;overflow-wrap:anywhere;}
+.log-item[data-kind="alert"] .log-tag,
+.log-item[data-kind="alert"] .log-text{color:var(--alert);}
+.log-item[data-kind="quiet"] .log-tag{color:var(--shelf);}
+.log-item[data-kind="dep"] .log-tag{color:var(--haze);}
+.log-cursor{
+  display:inline-block;
+  width:4px;
+  height:9px;
+  margin-left:1px;
+  vertical-align:-1px;
+  background:var(--glow);
+  animation:blink 1s steps(1,end) infinite;
+}
+.radar-panel{
+  right:20px;
+  bottom:calc(101px + env(safe-area-inset-bottom));
+  width:188px;
+  padding-bottom:8px;
+}
+.radar-frame{
+  position:relative;
+  padding:3px;
+  border:1px solid rgba(46,125,138,.24);
+  background:rgba(5,8,13,.72);
+}
+.radar-frame::before,
+.radar-frame::after{
+  content:"";
+  position:absolute;
+  pointer-events:none;
+}
+.radar-frame::before{
+  top:5px;
+  left:5px;
+  width:5px;
+  height:5px;
+  border-top:1px solid var(--current);
+  border-left:1px solid var(--current);
+}
+.radar-frame::after{
+  right:5px;
+  bottom:5px;
+  width:5px;
+  height:5px;
+  border-right:1px solid var(--current);
+  border-bottom:1px solid var(--current);
+}
+#radar{
+  display:block;
+  width:100%;
+  height:auto;
+  image-rendering:-moz-crisp-edges;
+  image-rendering:crisp-edges;
+  image-rendering:pixelated;
+}
+.radar-fwd{
+  position:absolute;
+  top:5px;
+  left:50%;
+  transform:translateX(-50%);
+  color:var(--shelf);
+  font-size:6px;
+  line-height:1;
+  letter-spacing:.18em;
+  pointer-events:none;
+}
+.radar-meta{
+  display:flex;
+  justify-content:space-between;
+  gap:8px;
+  margin-top:5px;
+  color:var(--current);
+  font-size:6px;
+  line-height:1.2;
+  letter-spacing:.09em;
+  white-space:nowrap;
+}
+.radar-meta span{overflow:hidden;text-overflow:ellipsis;}
+.radar-meta span:last-child{color:var(--shelf);text-align:right;}
+.radar-panel.is-err{border-color:rgba(251,146,60,.54);}
+.radar-panel.is-err .panel-tag span:last-child{color:var(--alert);}
+.ops{
+  position:absolute;
+  right:20px;
+  bottom:calc(56px + env(safe-area-inset-bottom));
+  display:flex;
+  width:188px;
+  gap:5px;
+  pointer-events:auto;
+}
+.ctrl{
+  flex:1;
+  min-width:0;
+  min-height:38px;
+  padding:4px 3px 3px;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:2px;
+  border:1px solid rgba(46,125,138,.42);
+  background:rgba(5,8,13,.76);
+  color:var(--current);
+  text-align:center;
+  letter-spacing:.11em;
+}
+.ctrl-main{
+  display:block;
+  color:var(--glow);
+  font-size:8px;
+  line-height:1.15;
+  letter-spacing:.15em;
+}
+.ctrl-cn{
+  display:block;
+  color:var(--current);
+  font-size:7px;
+  line-height:1.15;
+  letter-spacing:.07em;
+  white-space:nowrap;
+}
+.ctrl-cn b{font-weight:400;color:var(--shelf);}
+.ctrl.primary{border-color:rgba(94,234,212,.72);box-shadow:inset 0 0 0 1px rgba(94,234,212,.04);}
+.ctrl.primary .ctrl-main{color:var(--foam);}
+.ctrl:hover{background:var(--glow);border-color:var(--glow);color:var(--void);}
+.ctrl:hover .ctrl-main,.ctrl:hover .ctrl-cn,.ctrl:hover .ctrl-cn b{color:var(--void);}
+.ctrl:active{transform:translateY(1px);}
+.ctrl.is-on{border-color:var(--glow);background:rgba(27,74,90,.48);}
+.ctrl.is-on .ctrl-main{color:var(--foam);}
+.ctrl[aria-disabled="true"]{opacity:.42;cursor:not-allowed;background:rgba(5,8,13,.7);border-color:var(--hair-dim);}
+.ctrl[aria-disabled="true"]:hover .ctrl-main,
+.ctrl[aria-disabled="true"]:hover .ctrl-cn{color:var(--current);}
+.ctrl[aria-disabled="true"]:hover{background:rgba(5,8,13,.7);border-color:var(--hair-dim);}
+.hints{
+  position:absolute;
+  left:50%;
+  bottom:calc(16px + env(safe-area-inset-bottom));
+  display:flex;
+  align-items:center;
+  gap:14px;
+  transform:translateX(-50%);
+  color:var(--shelf);
+  font-size:7px;
+  line-height:1;
+  letter-spacing:.08em;
+  white-space:nowrap;
+  pointer-events:none;
+}
+.hints span{display:inline-flex;align-items:center;gap:5px;}
+.hints kbd{
+  padding:2px 4px;
+  border:1px solid rgba(46,125,138,.36);
+  background:rgba(5,8,13,.6);
+  color:var(--haze);
+  font-family:var(--mono);
+  font-size:6px;
+  line-height:1;
+  letter-spacing:.08em;
+}
+.hints .free{color:var(--current);}
+.intro-cue{
+  position:absolute;
+  left:50%;
+  bottom:29%;
+  max-width:min(520px,calc(100vw - 40px));
+  padding:8px 13px;
+  border-top:1px solid var(--hair-dim);
+  border-bottom:1px solid var(--hair-dim);
+  background:rgba(5,8,13,.5);
+  color:var(--current);
+  font-size:9px;
+  line-height:1.5;
+  letter-spacing:.13em;
+  text-align:center;
+  white-space:nowrap;
+  opacity:0;
+  visibility:hidden;
+  transform:translateX(-50%);
+  transition:opacity .35s steps(3,end),visibility .35s;
+  pointer-events:none;
+}
+.intro-cue.is-visible{opacity:1;visibility:visible;}
+.intro-cue.is-off{opacity:0;visibility:hidden;}
+.intro-cue small{
+  display:block;
+  margin-top:3px;
+  color:var(--shelf);
+  font-size:7px;
+  letter-spacing:.16em;
+}
+.intro-cue .touch{display:none;}
+.sig-label{
+  position:absolute;
+  top:0;
+  left:0;
+  width:max-content;
+  max-width:178px;
+  padding:4px 6px 5px 7px;
+  border:0;
+  border-left:1px solid var(--glow);
+  background:rgba(5,8,13,.82);
+  color:var(--haze);
+  line-height:1.15;
+  text-align:left;
+  visibility:hidden;
+  opacity:0;
+  pointer-events:none;
+  transform:translate(15px,-50%);
+}
+.sig-label.is-on{
+  visibility:visible;
+  opacity:1;
+  pointer-events:auto;
+  animation:sig-in .18s steps(3,end) both;
+}
+.sig-label.flip{transform:translate(calc(-100% - 15px),-50%);}
+.sig-label::before{
+  content:"";
+  position:absolute;
+  top:50%;
+  left:-15px;
+  width:14px;
+  height:1px;
+  background:var(--current);
+}
+.sig-label.flip::before{left:auto;right:-15px;}
+.sig-label::after{
+  content:"";
+  position:absolute;
+  top:-1px;
+  left:0;
+  width:8px;
+  height:1px;
+  background:var(--glow);
+}
+.sig-top{
+  display:flex;
+  justify-content:space-between;
+  gap:8px;
+  color:var(--current);
+  font-size:6px;
+  line-height:1.1;
+  letter-spacing:.12em;
+}
+.sig-top span:last-child{color:var(--shelf);}
+.sig-name{
+  display:block;
+  margin-top:2px;
+  color:var(--foam);
+  font-size:10px;
+  line-height:1.2;
+  letter-spacing:.05em;
+}
+.sig-en{
+  display:block;
+  margin-top:1px;
+  color:var(--glow);
+  font-size:6px;
+  line-height:1.2;
+  letter-spacing:.08em;
+}
+.sig-mark{color:var(--glow);}
+.sig-label.is-archived{border-left-color:var(--shelf);}
+.sig-label.is-archived .sig-name{color:var(--haze);}
+.sig-label.is-archived .sig-en{color:var(--current);}
+.sig-label.is-alert{border-left-color:var(--alert);}
+.sig-label.is-alert .sig-name{color:var(--alert);}
+.sig-label.is-hover,.sig-label:focus-visible{
+  background:rgba(10,22,34,.92);
+  box-shadow:0 0 0 1px rgba(94,234,212,.2);
+}
+.sig-label:focus-visible{outline:1px solid var(--foam);outline-offset:3px;}
+.boot{
+  position:fixed;
+  inset:0;
+  z-index:50;
+  display:grid;
+  place-items:center;
+  background:var(--void);
+  background-image:repeating-linear-gradient(0deg,rgba(5,8,13,0) 0 2px,rgba(46,125,138,.035) 2px 3px);
+  opacity:1;
+  visibility:visible;
+  transition:opacity .2s steps(3,end),visibility .2s;
+  pointer-events:none;
+}
+.boot.is-done{opacity:0;visibility:hidden;}
+.boot-inner{
+  width:min(440px,calc(100vw - 48px));
+  padding:0 0 2px;
+}
+.boot-top{
+  display:flex;
+  justify-content:space-between;
+  gap:14px;
+  padding-bottom:8px;
+  border-bottom:1px solid var(--hair-dim);
+  color:var(--shelf);
+  font-size:7px;
+  line-height:1;
+  letter-spacing:.12em;
+}
+.boot-brand{
+  display:flex;
+  align-items:center;
+  gap:14px;
+  margin:27px 0 20px;
+  color:var(--foam);
+  font-size:clamp(19px,3.4vw,30px);
+  font-weight:600;
+  line-height:1.05;
+  letter-spacing:.14em;
+  text-shadow:1px 0 0 rgba(94,234,212,.14),-1px 0 0 rgba(251,146,60,.055);
+}
+.boot-brand svg{width:40px;height:40px;flex:0 0 auto;color:var(--glow);}
+.boot-brand span{display:block;}
+.boot-brand small{
+  display:block;
+  margin-top:6px;
+  color:var(--current);
+  font-size:8px;
+  font-weight:400;
+  line-height:1;
+  letter-spacing:.2em;
+}
+.boot-rule{
+  height:1px;
+  margin-bottom:12px;
+  background:repeating-linear-gradient(90deg,var(--current) 0 8px,transparent 8px 12px);
+  opacity:.38;
+}
+.boot-lines p{
+  margin:3px 0;
+  color:var(--current);
+  font-size:9px;
+  line-height:1.4;
+  letter-spacing:.04em;
+  opacity:0;
+  animation:bootline .05s steps(1,end) forwards;
+  animation-delay:calc(80ms + var(--i) * 64ms);
+}
+.boot-lines p b{color:var(--glow);font-weight:400;}
+.boot-lines p:last-child{color:var(--haze);}
+.boot-foot{
+  display:flex;
+  align-items:center;
+  gap:7px;
+  margin-top:19px;
+  padding-top:8px;
+  border-top:1px solid var(--hair-dim);
+  color:var(--shelf);
+  font-size:7px;
+  line-height:1;
+  letter-spacing:.13em;
+}
+.boot-cursor{
+  display:inline-block;
+  width:5px;
+  height:8px;
+  background:var(--glow);
+  animation:blink 1s steps(1,end) infinite;
+}
+.boot-scan{
+  position:absolute;
+  top:0;
+  left:0;
+  right:0;
+  height:1px;
+  background:var(--glow);
+  box-shadow:0 0 12px rgba(94,234,212,.4);
+  opacity:.28;
+  animation:bootscan .95s linear forwards;
+}
+.screen.is-tearing{animation:tear .17s steps(2,end) 1 both;}
+.screen.is-anomaly{animation:crt-flicker 3.4s steps(1,end) 1 both;}
+.radar-panel.is-err .panel-tag span:last-child,
+.mast-meta .live.is-err{color:var(--alert);}
+.mast-meta .live.is-err i{background:var(--alert);box-shadow:0 0 6px rgba(251,146,60,.5);}
+@keyframes scanband{
+  0%{transform:translateY(0);}
+  100%{transform:translateY(760%);}
+}
+@keyframes status-breathe{
+  0%,72%,100%{opacity:1;}
+  78%,88%{opacity:.26;}
+}
+@keyframes blink{
+  0%,48%{opacity:1;}
+  49%,100%{opacity:0;}
+}
+@keyframes sig-in{
+  from{clip-path:inset(0 100% 0 0);}
+  to{clip-path:inset(0 0 0 0);}
+}
+@keyframes bootline{
+  to{opacity:1;}
+}
+@keyframes bootscan{
+  0%{transform:translateY(0);}
+  100%{transform:translateY(100vh);}
+}
+@keyframes tear{
+  0%{transform:translate(0,0);clip-path:inset(0 0 0 0);}
+  34%{transform:translate(-2px,0);clip-path:inset(37% 0 44% 0);}
+  67%{transform:translate(2px,0);clip-path:inset(37% 0 44% 0);}
+  100%{transform:translate(0,0);clip-path:inset(0 0 0 0);}
+}
+@keyframes crt-flicker{
+  0%,4%,11%,24%,29%,45%,48%,70%,100%{opacity:1;}
+  5%,9%,27%,43%,47%,72%,74%{opacity:.78;}
+  6%,26%,46%{opacity:.94;}
+}
+@media (max-width:1220px){
+  .cam-label{display:none;}
+  .hints{gap:10px;}
+}
+@media (max-width:1100px) and (min-width:821px){
+  .telemetry{width:340px;left:14px;top:calc(72px + env(safe-area-inset-top));}
+  .status{width:240px;right:14px;top:calc(72px + env(safe-area-inset-top));}
+  .log{left:14px;width:370px;bottom:calc(48px + env(safe-area-inset-bottom));}
+  .radar-panel{width:174px;right:14px;bottom:calc(94px + env(safe-area-inset-bottom));}
+  .ops{width:174px;right:14px;bottom:calc(48px + env(safe-area-inset-bottom));}
+  .hints{display:none;}
+  .masthead{left:14px;right:14px;}
+  .tele-value{font-size:13px;}
+  .tele-depth .tele-value{font-size:22px;}
+  .log-list{height:98px;}
+}
+@media (max-width:820px){
+  .masthead{top:calc(9px + env(safe-area-inset-top));left:10px;right:10px;align-items:center;}
+  .brand{gap:7px;}
+  .brand-mark{width:21px;height:21px;}
+  .brand-title{font-size:10px;letter-spacing:.12em;}
+  .brand-sub{display:none;}
+  .mast-meta{padding-top:0;gap:7px;font-size:6px;}
+  .mast-meta .utc{display:none;}
+  .mast-meta .live{font-size:6px;}
+  .cam-label{display:none;}
+  .telemetry{
+    top:calc(40px + env(safe-area-inset-top));
+    left:10px;
+    right:10px;
+    width:auto;
+    padding:6px 8px 7px;
+  }
+  .tele-grid{grid-template-columns:1.42fr .78fr .9fr 1fr;}
+  .tele{padding:0 6px;}
+  .tele-label{font-size:6px;letter-spacing:.04em;}
+  .tele-label em{display:none;}
+  .tele-value{font-size:11px;margin-top:5px;}
+  .tele-depth .tele-value{font-size:18px;}
+  .tele-value small{font-size:6px;}
+  .tele-depth .tele-value small{font-size:7px;}
+  .tele-sub{font-size:6px;margin-top:4px;}
+  .tele:not(.tele-depth) > .tele-sub{display:none;}
+  .tele-depth .tele-sub{font-size:6px;}
+  .signal-meter{margin-top:4px;height:2px;}
+  .telemetry .panel-tag{font-size:6px;margin-bottom:5px;padding-bottom:4px;}
+  .tape{margin-top:7px;height:3px;}
+  .tape-ticks{height:7px;font-size:5px;}
+  .tape-ticks span:nth-child(2),
+  .tape-ticks span:nth-child(3),
+  .tape-ticks span:nth-child(4){display:none;}
+  .status{
+    top:calc(130px + env(safe-area-inset-top));
+    left:10px;
+    right:10px;
+    width:auto;
+    padding:5px 7px;
+    display:flex;
+    align-items:center;
+    gap:8px;
+  }
+  .status .panel-tag{display:none;}
+  .status-line.coord-line{display:none;}
+  .status-line.mode-line{flex:1;min-width:0;padding:0;gap:6px;}
+  .status-line.mode-line .k{font-size:6px;}
+  .status-line .v.mode{font-size:7px;text-align:left;overflow:hidden;text-overflow:ellipsis;}
+  .status .led-row{margin:0;padding:0;border:0;display:flex;flex:0 0 auto;gap:6px;}
+  .status .led{font-size:6px;gap:3px;}
+  .status .led b{display:none;}
+  .status .depth-controls{flex:0 0 auto;gap:3px;margin:0;}
+  .status .depth-btn{width:33px;height:24px;flex:0 0 auto;padding:0 4px;font-size:6px;}
+  .status .depth-btn span{font-size:7px;margin:0;}
+  .status .depth-btn em{display:none;}
+  .log{
+    left:10px;
+    bottom:calc(60px + env(safe-area-inset-bottom));
+    width:calc(62% - 15px);
+    padding:5px 6px 6px;
+  }
+  .log .panel-tag{font-size:6px;margin-bottom:4px;padding-bottom:3px;}
+  .log-list{height:93px;}
+  .log-item{grid-template-columns:34px 22px minmax(0,1fr);gap:4px;font-size:7px;line-height:1.35;padding:1px 0;}
+  .log-time{font-size:5px;line-height:1.7;}
+  .log-tag{font-size:5px;line-height:1.7;}
+  .log-cursor{width:3px;height:7px;}
+  .radar-panel{
+    right:10px;
+    bottom:calc(60px + env(safe-area-inset-bottom));
+    width:calc(38% - 5px);
+    padding:5px 6px 6px;
+  }
+  .radar-panel .panel-tag{font-size:6px;margin-bottom:4px;padding-bottom:3px;}
+  .radar-fwd{font-size:5px;top:4px;}
+  .radar-meta{font-size:5px;gap:4px;margin-top:3px;}
+  .ops{
+    left:10px;
+    right:10px;
+    bottom:calc(9px + env(safe-area-inset-bottom));
+    width:auto;
+    gap:5px;
+  }
+  .ctrl{min-height:43px;padding:3px 2px;border-color:rgba(46,125,138,.5);}
+  .ctrl-main{font-size:8px;}
+  .ctrl-cn{font-size:7px;}
+  .hints{display:none;}
+  .intro-cue{
+    bottom:31%;
+    max-width:calc(100vw - 30px);
+    padding:7px 10px;
+    font-size:8px;
+    letter-spacing:.06em;
+    white-space:normal;
+  }
+  .intro-cue .desktop{display:none;}
+  .intro-cue .touch{display:block;}
+  .intro-cue small{font-size:6px;}
+  .sig-label{
+    max-width:142px;
+    padding:4px 5px 4px 6px;
+    transform:translate(10px,-50%);
+  }
+  .sig-label.flip{transform:translate(calc(-100% - 10px),-50%);}
+  .sig-label::before{left:-10px;width:9px;}
+  .sig-label.flip::before{left:auto;right:-10px;}
+  .sig-top{font-size:5px;gap:5px;}
+  .sig-name{font-size:9px;}
+  .sig-en{font-size:5px;}
+}
+@media (max-width:380px){
+  .brand-title{font-size:9px;letter-spacing:.08em;}
+  .telemetry{left:7px;right:7px;}
+  .status{left:7px;right:7px;}
+  .log{left:7px;width:calc(63% - 12px);}
+  .radar-panel{right:7px;width:calc(37% - 4px);}
+  .ops{left:7px;right:7px;}
+  .status .led{font-size:5px;}
+  .status .led b{display:none;}
+  .ctrl-main{font-size:7px;}
+  .ctrl-cn{font-size:6px;}
+}
+@media (max-height:560px) and (orientation:landscape){
+  .masthead{top:calc(7px + env(safe-area-inset-top));left:10px;right:10px;}
+  .brand-sub,.cam-label,.hints,.mast-meta .utc{display:none;}
+  .brand-title{font-size:9px;letter-spacing:.1em;}
+  .brand-mark{width:19px;height:19px;}
+  .telemetry{
+    top:calc(34px + env(safe-area-inset-top));
+    left:10px;
+    width:min(300px, 56vw);
+    padding:5px 7px 6px;
+  }
+  .telemetry .panel-tag{font-size:6px;margin-bottom:4px;padding-bottom:3px;}
+  .tele-grid{grid-template-columns:1.5fr .8fr .95fr 1fr;}
+  .tele-label{font-size:6px;}
+  .tele-label em{display:none;}
+  .tele-value{font-size:11px;margin-top:4px;}
+  .tele-depth .tele-value{font-size:17px;}
+  .tele-sub{font-size:6px;margin-top:3px;}
+  .tele:not(.tele-depth) > .tele-sub{display:none;}
+  .tape{margin-top:6px;height:3px;}
+  .tape-ticks{display:none;}
+  .status{
+    top:calc(34px + env(safe-area-inset-top));
+    right:10px;
+    left:auto;
+    width:min(224px, 39vw);
+    padding:5px 7px 6px;
+  }
+  .status .panel-tag{margin-bottom:3px;padding-bottom:3px;font-size:6px;}
+  .status-line{padding:1px 0;font-size:7px;}
+  .status-line .v{font-size:7px;}
+  .status-line.coord-line{display:none;}
+  .led-row{margin-top:3px;padding-top:4px;gap:5px;}
+  .led{font-size:6px;}
+  .led b{display:none;}
+  .depth-controls{margin-top:4px;gap:4px;}
+  .depth-btn{height:21px;font-size:6px;}
+  .depth-btn em{display:none;}
+  .log{left:10px;bottom:calc(47px + env(safe-area-inset-bottom));width:320px;padding:5px 6px 6px;}
+  .log .panel-tag{font-size:6px;margin-bottom:3px;padding-bottom:3px;}
+  .log-list{height:66px;}
+  .log-item{font-size:7px;line-height:1.28;grid-template-columns:37px 23px minmax(0,1fr);gap:4px;}
+  .log-time,.log-tag{font-size:5px;}
+  .radar-panel{right:10px;bottom:calc(79px + env(safe-area-inset-bottom));width:132px;padding:4px 5px 5px;}
+  .radar-panel .panel-tag{font-size:6px;margin-bottom:3px;padding-bottom:2px;}
+  .radar-meta{font-size:5px;margin-top:3px;}
+  .ops{left:auto;right:10px;bottom:calc(10px + env(safe-area-inset-bottom));width:132px;gap:3px;}
+  .ctrl{min-height:31px;padding:2px 1px;}
+  .ctrl-main{font-size:7px;}
+  .ctrl-cn{font-size:6px;}
+  .intro-cue{bottom:32%;font-size:7px;}
+  .sig-label{max-width:132px;}
+  .sig-name{font-size:8px;}
+  .sig-en{display:none;}
+}
+@media (hover:none){
+  .interaction{cursor:default;}
+  .ctrl:hover{background:rgba(5,8,13,.76);border-color:rgba(46,125,138,.42);color:var(--current);}
+  .ctrl:hover .ctrl-main{color:var(--glow);}
+  .ctrl:hover .ctrl-cn,.ctrl:hover .ctrl-cn b{color:var(--current);}
+  .ctrl.is-on:hover{background:rgba(27,74,90,.48);border-color:var(--glow);}
+  .depth-btn:hover{background:rgba(8,18,28,.5);color:var(--current);}
+}
+@media (prefers-reduced-motion:reduce){
+  .scanband,
+  .boot-scan,
+  .mast-meta .live i,
+  .cam-label .live b,
+  .log-cursor,
+  .boot-cursor{animation:none!important;}
+  .sig-label.is-on{animation:none!important;}
+  .screen.is-tearing,
+  .screen.is-anomaly{animation:none!important;}
+  .boot-lines p{opacity:1!important;animation:none!important;}
+  .intro-cue{transition:none;}
+  .scanband{display:none;}
+}
+</style>
+</head>
+<body>
+<main class="machine" aria-label="ABYSSAL PIXEL PROBE 深渊像素探勘器">
+  <div class="stage" id="stage">
+    <div class="screen" id="screen">
+      <canvas id="scene" width="384" height="216" role="img" aria-label="低照度深海像素画面。一台小型探测器在画面下方，探照灯向上照亮黑暗。"></canvas>
+    </div>
+  </div>
+  <div class="labels" id="labels"></div>
+  <div class="interaction" id="interaction"></div>
+
+  <div class="hud" id="hud">
+    <header class="masthead">
+      <div class="brand" aria-label="深渊像素探勘器，深站七号">
+        <svg class="brand-mark" viewBox="0 0 16 16" shape-rendering="crispEdges" aria-hidden="true">
+          <path fill="currentColor" d="M2 6h10v5H2zM12 7h2v3h-2zM5 4h5v2H5zM4 11h2v2H4zM9 11h2v2H9z"/>
+          <path fill="var(--void)" d="M4 7h6v3H4z"/>
+          <path fill="var(--foam)" d="M5 8h2v1H5zM12 8h1v1h-1z"/>
+        </svg>
+        <div>
+          <h1 class="brand-title">ABYSSAL <span>PIXEL</span> PROBE</h1>
+          <div class="brand-sub">深渊像素探勘器 <i>/</i> DEEP STATION DS-07</div>
+        </div>
+      </div>
+      <div class="mast-meta">
+        <span class="live" id="linkLive"><i></i><span id="linkText">LINK STABLE</span></span>
+        <span class="utc"><b>UTC</b> <span id="clock">--:--:--</span></span>
+      </div>
+    </header>
+
+    <div class="cam-label" aria-hidden="true">
+      <span>CAM 04</span><i></i><span>LOW-LIGHT OPTICS</span><i></i><span class="live"><b></b> LIVE</span>
+    </div>
+
+    <section class="panel telemetry" aria-label="环境遥测">
+      <div class="panel-tag"><span>TELEMETRY / 遥测</span><span>SENSOR BUS OK</span></div>
+      <div class="tele-grid">
+        <div class="tele tele-depth">
+          <div class="tele-label"><span>DEPTH</span><em>深度</em></div>
+          <div class="tele-value"><span id="depthValue">0688.0</span><small>M</small></div>
+          <div class="tele-sub"><span id="zoneEn">ABYSSAL</span> <span id="zoneCn">深渊带</span></div>
+        </div>
+        <div class="tele">
+          <div class="tele-label"><span>TEMP</span><em>水温</em></div>
+          <div class="tele-value"><span id="tempValue">04.3</span><small>°C</small></div>
+          <div class="tele-sub" id="tempSub">STABLE</div>
+        </div>
+        <div class="tele">
+          <div class="tele-label"><span>PRESS</span><em>压力</em></div>
+          <div class="tele-value"><span id="pressValue">70.4</span><small>BAR</small></div>
+          <div class="tele-sub" id="pressSub">HULL OK</div>
+        </div>
+        <div class="tele">
+          <div class="tele-label"><span>SIGNAL</span><em>信号</em></div>
+          <div class="tele-value"><span id="signalValue">042</span><small>%</small></div>
+          <div class="signal-meter" id="signalMeter" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        </div>
+      </div>
+      <div class="tape" aria-hidden="true">
+        <i data-zone="PHOTIC" style="flex:200 1 0"></i>
+        <i data-zone="TWILIGHT" style="flex:400 1 0"></i>
+        <i data-zone="ABYSSAL" style="flex:400 1 0"></i>
+        <i data-zone="HADAL" style="flex:400 1 0"></i>
+        <b id="depthMarker"></b>
+      </div>
+      <div class="tape-ticks" aria-hidden="true">
+        <span style="left:0%">0000</span>
+        <span style="left:14.29%">0200</span>
+        <span style="left:42.86%">0600</span>
+        <span style="left:71.43%">1000</span>
+        <span style="left:100%">1400</span>
+      </div>
+    </section>
+
+    <section class="panel status" id="statusPanel" aria-label="设备状态">
+      <div class="panel-tag"><span>OPTICS ARRAY / CH-04</span><span id="statusCode">DS-07</span></div>
+      <div class="status-line mode-line">
+        <span class="k">MODE</span>
+        <span class="v mode" id="modeValue">PASSIVE DRIFT</span>
+      </div>
+      <div class="status-line coord-line">
+        <span class="k">POS</span>
+        <span class="v">11°22.4′N 142°11.8′E</span>
+      </div>
+      <div class="led-row">
+        <span class="led"><i id="ledLamp"></i><span>LAMP</span><b id="lampReadout">100</b></span>
+        <span class="led"><i id="ledSonar"></i><span>SONAR</span><b id="sonarReadout">RDY</b></span>
+        <span class="led"><i id="ledLink"></i><span>LINK</span><b id="linkReadout">OK</b></span>
+      </div>
+      <div class="depth-controls">
+        <button class="depth-btn" id="ascendBtn" type="button" aria-label="上浮五十米"><span aria-hidden="true">▲</span>上浮<em>50M</em></button>
+        <button class="depth-btn" id="descendBtn" type="button" aria-label="下潜五十米"><span aria-hidden="true">▼</span>下潜<em>50M</em></button>
+      </div>
+    </section>
+
+    <aside class="panel log" aria-label="事件日志">
+      <div class="panel-tag"><span>EVENT LOG / 事件日志</span><span id="logCount">000</span></div>
+      <ol class="log-list" id="logList"></ol>
+    </aside>
+
+    <aside class="panel radar-panel" id="radarPanel" aria-label="近场声呐">
+      <div class="panel-tag"><span>SONAR / 近场</span><span id="radarTag">R 240M</span></div>
+      <div class="radar-frame">
+        <canvas id="radar" width="96" height="96" aria-hidden="true"></canvas>
+        <span class="radar-fwd">FWD</span>
+      </div>
+      <div class="radar-meta"><span id="echoCount">00 ECHO</span><span id="radarNote">PASSIVE SCAN</span></div>
+    </aside>
+
+    <div class="ops" aria-label="探头控制">
+      <button class="ctrl primary" id="pingBtn" type="button" aria-label="发射声呐脉冲">
+        <span class="ctrl-main">PING</span><span class="ctrl-cn">声呐</span>
+      </button>
+      <button class="ctrl" id="quietBtn" type="button" aria-pressed="false" aria-label="静默模式，当前关闭">
+        <span class="ctrl-main">QUIET</span><span class="ctrl-cn">静默 <b id="quietState">OFF</b></span>
+      </button>
+      <button class="ctrl" id="audioBtn" type="button" aria-pressed="false" aria-label="环境音频，当前关闭">
+        <span class="ctrl-main">AUDIO</span><span class="ctrl-cn">音频 <b id="audioState">OFF</b></span>
+      </button>
+    </div>
+
+    <div class="hints" aria-hidden="true">
+      <span class="free">MOVE / 照明</span>
+      <span><kbd>SPACE</kbd>声呐</span>
+      <span><kbd>S</kbd>静默</span>
+      <span><kbd>WHEEL</kbd><kbd>↑↓</kbd>深度</span>
+      <span><kbd>R</kbd>复位</span>
+      <span><kbd>ESC</kbd>取消</span>
+    </div>
+
+    <div class="intro-cue" id="introCue" aria-hidden="true">
+      <span class="desktop">移动光标牵引光锥 · 点击或空格发射声呐</span>
+      <span class="touch">单指拖拽照明 · 轻触发射声呐 · 双指调节深度</span>
+      <small>MOVE TO AIM / PING TO MAP</small>
+    </div>
+  </div>
+
+  <div class="screen-edge" aria-hidden="true"></div>
+  <div class="crt" aria-hidden="true"><span class="scanband"></span></div>
+
+  <div class="boot" id="boot" aria-hidden="true">
+    <div class="boot-scan"></div>
+    <div class="boot-inner">
+      <div class="boot-top"><span>DS-07 / DEEP STATION</span><span>BIOS 3.14</span></div>
+      <div class="boot-brand">
+        <svg viewBox="0 0 16 16" shape-rendering="crispEdges" aria-hidden="true">
+          <path fill="currentColor" d="M1 6h10v5H1zM11 7h3v3h-3zM4 3h6v3H4zM3 11h2v3H3zM9 11h2v3H9z"/>
+          <path fill="var(--void)" d="M3 7h6v3H3z"/>
+          <path fill="var(--foam)" d="M4 8h2v1H4zM12 8h1v1h-1z"/>
+        </svg>
+        <span>ABYSSAL<br>PIXEL PROBE<small>深渊像素探勘器 / ABYSSAL PIXEL PROBE</small></span>
+      </div>
+      <div class="boot-rule"></div>
+      <div class="boot-lines">
+        <p style="--i:0">PRESSURE HULL ........ <b>OK</b></p>
+        <p style="--i:1">OPTICAL ARRAY CH-04 ... <b>ONLINE</b></p>
+        <p style="--i:2">SONAR BUS LF-2 ....... <b>READY</b></p>
+        <p style="--i:3">DEPTH SENSOR .......... <b>0688 M</b></p>
+        <p style="--i:4">ABYSSAL LINK .......... <b>ESTABLISHED</b></p>
+      </div>
+      <div class="boot-foot"><span class="boot-cursor"></span><span>LOW-LIGHT OPTICS / 30 FPS / GAIN +12DB</span></div>
+    </div>
+  </div>
+
+  <p class="sr-only" id="instructions">操作说明：移动鼠标或拖拽触摸来牵引探照灯。点击画面、按空格或按声呐按钮发射声呐。靠近探测器显露的信号可以用鼠标或触摸点击记录，也可以使用 Tab 聚焦信号标签后按回车。按 S 切换静默模式，按 R 复位，按 Escape 取消选择，使用滚轮、方向键或上下浮按钮调整深度。音频默认关闭。</p>
+  <div class="sr-only" id="live" role="status" aria-live="polite" aria-atomic="true"></div>
+</main>
+
+<script>
+(() => {
+  'use strict';
+
+  /* ---------------------------------------------------------------------
+     Palette and low-level utilities
+     Every rendered colour comes from this twelve-entry palette. Alpha is
+     only used by DOM chrome; the canvas stays on the palette grid.
+  --------------------------------------------------------------------- */
+  const C = {
+    void:    '#05080d',
+    pitch:   '#08121c',
+    abyss:   '#0a1622',
+    deep:    '#102a3c',
+    trench:  '#143744',
+    shelf:   '#1b4a5a',
+    current: '#2e7d8a',
+    glow:    '#5eead4',
+    haze:    '#a7f3d0',
+    foam:    '#e6f7ff',
+    alert:   '#fb923c',
+    ember:   '#b6532e'
+  };
+  const PAL_KEYS = ['void','pitch','abyss','deep','trench','shelf','current','glow','haze','foam','alert','ember'];
+  const PAL_HEX = PAL_KEYS.map(key => C[key]);
+  const PAL_RGB = PAL_HEX.map(hex => [
+    parseInt(hex.slice(1, 3), 16),
+    parseInt(hex.slice(3, 5), 16),
+    parseInt(hex.slice(5, 7), 16)
+  ]);
+  const I = {
+    void: 0, pitch: 1, abyss: 2, deep: 3, trench: 4, shelf: 5,
+    current: 6, glow: 7, haze: 8, foam: 9, alert: 10, ember: 11
+  };
+
+  const BAYER = new Uint8Array([
+     0, 32,  8, 40,  2, 34, 10, 42,
+    48, 16, 56, 24, 50, 18, 58, 26,
+    12, 44,  4, 36, 14, 46,  6, 38,
+    60, 28, 52, 20, 62, 30, 54, 22,
+     3, 35, 11, 43,  1, 33,  9, 41,
+    51, 19, 59, 27, 49, 17, 57, 25,
+    15, 47,  7, 39, 13, 45,  5, 37,
+    63, 31, 55, 23, 61, 29, 53, 21
+  ]);
+
+  const TAU = Math.PI * 2;
+  const MAX_DEPTH = 1400;
+  const START_DEPTH = 688;
+  const $ = (selector, root = document) => root.querySelector(selector);
+  const clamp = (value, min, max) => value < min ? min : value > max ? max : value;
+  const bayer = (x, y) => BAYER[(y & 7) * 8 + (x & 7)] / 64;
+  const hash = (n) => {
+    const value = Math.sin(n * 127.1 + 311.7) * 43758.5453123;
+    return value - Math.floor(value);
+  };
+  const hash2 = (x, y) => hash(x * 7.131 + y * 13.733);
+  const wrapAngle = (angle) => {
+    let a = angle;
+    while (a > Math.PI) a -= TAU;
+    while (a < -Math.PI) a += TAU;
+    return a;
+  };
+  const pad = (value, length = 2) => String(value).padStart(length, '0');
+
+  const ZONES = [
+    {
+      id: 'PHOTIC', en: 'PHOTIC', cn: '透光带', min: 0, max: 200, seed: 17.4,
+      ramp: [I.abyss, I.deep, I.trench, I.shelf, I.trench],
+      far: C.pitch, near: C.void, edge: C.current, accent: C.glow, extras: 'kelp'
+    },
+    {
+      id: 'TWILIGHT', en: 'TWILIGHT', cn: '暮光带', min: 200, max: 600, seed: 61.8,
+      ramp: [I.pitch, I.abyss, I.deep, I.trench, I.deep],
+      far: C.pitch, near: C.void, edge: C.current, accent: C.shelf, extras: 'ribs'
+    },
+    {
+      id: 'ABYSSAL', en: 'ABYSSAL', cn: '深渊带', min: 600, max: 1000, seed: 113.7,
+      ramp: [I.void, I.pitch, I.abyss, I.deep, I.trench],
+      far: C.pitch, near: C.void, edge: C.current, accent: C.glow, extras: 'ruin'
+    },
+    {
+      id: 'HADAL', en: 'HADAL', cn: '超深渊带', min: 1000, max: 1400, seed: 167.2,
+      ramp: [I.void, I.void, I.pitch, I.abyss, I.deep],
+      far: C.void, near: C.void, edge: C.shelf, accent: C.current, extras: 'trench'
+    }
+  ];
+
+  const TYPES = [
+    { code: 'ORG', kind: 'organism', cn: '未知生物', en: 'UNKNOWN ORGANISM', range: [38, 176] },
+    { code: 'VNT', kind: 'vent',     cn: '热液喷口', en: 'HYDROTHERMAL VENT', range: [32, 118] },
+    { code: 'WRK', kind: 'wreck',    cn: '沉船残骸', en: 'SUNKEN WRECK', range: [56, 210] },
+    { code: 'RUN', kind: 'ruin',     cn: '遗迹',     en: 'SUBMERGED RUIN', range: [44, 168] },
+    { code: 'ECH', kind: 'echo',     cn: '异常信号', en: 'ANOMALOUS ECHO', range: [82, 240] }
+  ];
+
+  const AMBIENT = {
+    PHOTIC: [
+      '光柱穿过水体。悬浮颗粒密度偏高。',
+      '远处有节律性低频鸣响。来源不明。',
+      '海雪下沉速度低于预测值。'
+    ],
+    TWILIGHT: [
+      '热跃层扰动，成像出现轻微抖动。',
+      '远层轮廓类似鲸落骨架。未确认。',
+      '环境噪声下降。光衰减率异常。'
+    ],
+    ABYSSAL: [
+      '压载舱压力稳定。地形回波增强。',
+      '热液羽流温度上升零点四度。',
+      '光学阵列捕捉到移动阴影。',
+      '未分类回波在本区段重复出现。'
+    ],
+    HADAL: [
+      '深度超过一千米。外壳载荷接近设计区间。',
+      '背景噪声持续下降。深沟内无回波。',
+      '温度探头读数稳定。沉积物密度上升。'
+    ]
+  };
+
+  function zoneAt(depth) {
+    for (let i = ZONES.length - 1; i >= 0; i--) {
+      if (depth >= ZONES[i].min) return ZONES[i];
+    }
+    return ZONES[0];
+  }
+
+  function temperatureAt(depth) {
+    if (depth <= 200) return 22.4 - depth * 0.058;
+    if (depth <= 600) return 10.8 - (depth - 200) * 0.0142;
+    return 5.12 - (depth - 600) * 0.00135;
+  }
+
+  function pressureAt(depth) {
+    return 1 + depth / 10.06;
+  }
+
+  /* ---------------------------------------------------------------------
+     In-canvas 4×5 bitmap face. Used for small instrument annotations.
+  --------------------------------------------------------------------- */
+  const GLYPHS = {
+    ' ': ['0000','0000','0000','0000','0000'],
+    'A': ['0110','1001','1111','1001','1001'],
+    'B': ['1110','1001','1110','1001','1110'],
+    'C': ['0111','1000','1000','1000','0111'],
+    'D': ['1110','1001','1001','1001','1110'],
+    'E': ['1111','1000','1110','1000','1111'],
+    'F': ['1111','1000','1110','1000','1000'],
+    'G': ['0111','1000','1011','1001','0111'],
+    'H': ['1001','1001','1111','1001','1001'],
+    'I': ['1110','0100','0100','0100','1110'],
+    'J': ['0011','0001','0001','1001','0110'],
+    'K': ['1001','1010','1100','1010','1001'],
+    'L': ['1000','1000','1000','1000','1111'],
+    'M': ['1001','1111','1111','1001','1001'],
+    'N': ['1001','1101','1111','1011','1001'],
+    'O': ['0110','1001','1001','1001','0110'],
+    'P': ['1110','1001','1110','1000','1000'],
+    'Q': ['0110','1001','1001','1010','0101'],
+    'R': ['1110','1001','1110','1010','1001'],
+    'S': ['0111','1000','0110','0001','1110'],
+    'T': ['1111','0100','0100','0100','0100'],
+    'U': ['1001','1001','1001','1001','0110'],
+    'V': ['1001','1001','1001','0101','0010'],
+    'W': ['1001','1001','1011','1111','1001'],
+    'X': ['1001','1001','0110','1001','1001'],
+    'Y': ['1001','1001','0110','0100','0100'],
+    'Z': ['1111','0001','0110','1000','1111'],
+    '0': ['0110','1001','1011','1101','0110'],
+    '1': ['0010','0110','0010','0010','0111'],
+    '2': ['0110','1001','0010','0100','1111'],
+    '3': ['1110','0001','0110','0001','1110'],
+    '4': ['0010','0110','1010','1111','0010'],
+    '5': ['1111','1000','1110','0001','1110'],
+    '6': ['0110','1000','1110','1001','0110'],
+    '7': ['1111','0001','0010','0100','0100'],
+    '8': ['0110','1001','0110','1001','0110'],
+    '9': ['0110','1001','0111','0001','0110'],
+    '-': ['0000','0000','1110','0000','0000'],
+    '.': ['0000','0000','0000','0000','0010'],
+    '/': ['0001','0010','0010','0100','1000'],
+    ':': ['0000','0100','0000','0100','0000'],
+    '+': ['0000','0100','1110','0100','0000'],
+    '>': ['1000','0100','0010','0100','1000'],
+    '<': ['0010','0100','1000','0100','0010'],
+    '[': ['1110','1000','1000','1000','1110'],
+    ']': ['0111','0001','0001','0001','0111'],
+    '%': ['1001','0010','0100','1000','1001'],
+    "'": ['0100','0100','0000','0000','0000']
+  };
+
+  /* ---------------------------------------------------------------------
+     DOM handles and mutable probe state
+  --------------------------------------------------------------------- */
+  const dom = {
+    stage: $('#stage'),
+    screen: $('#screen'),
+    canvas: $('#scene'),
+    labels: $('#labels'),
+    interaction: $('#interaction'),
+    radar: $('#radar'),
+    hud: $('#hud'),
+    boot: $('#boot'),
+    depthValue: $('#depthValue'),
+    zoneEn: $('#zoneEn'),
+    zoneCn: $('#zoneCn'),
+    tempValue: $('#tempValue'),
+    pressValue: $('#pressValue'),
+    signalValue: $('#signalValue'),
+    signalMeter: $('#signalMeter'),
+    depthMarker: $('#depthMarker'),
+    tempSub: $('#tempSub'),
+    pressSub: $('#pressSub'),
+    clock: $('#clock'),
+    linkLive: $('#linkLive'),
+    linkText: $('#linkText'),
+    statusPanel: $('#statusPanel'),
+    statusCode: $('#statusCode'),
+    modeValue: $('#modeValue'),
+    ledLamp: $('#ledLamp'),
+    ledSonar: $('#ledSonar'),
+    ledLink: $('#ledLink'),
+    lampReadout: $('#lampReadout'),
+    sonarReadout: $('#sonarReadout'),
+    linkReadout: $('#linkReadout'),
+    ascendBtn: $('#ascendBtn'),
+    descendBtn: $('#descendBtn'),
+    logList: $('#logList'),
+    logCount: $('#logCount'),
+    radarPanel: $('#radarPanel'),
+    radarTag: $('#radarTag'),
+    echoCount: $('#echoCount'),
+    radarNote: $('#radarNote'),
+    pingBtn: $('#pingBtn'),
+    quietBtn: $('#quietBtn'),
+    quietState: $('#quietState'),
+    audioBtn: $('#audioBtn'),
+    audioState: $('#audioState'),
+    introCue: $('#introCue'),
+    live: $('#live'),
+    tapeSegments: Array.from(document.querySelectorAll('.tape i')),
+    meterBars: Array.from(document.querySelectorAll('#signalMeter i'))
+  };
+
+  const ctx = dom.canvas.getContext('2d', { alpha: false });
+  const rctx = dom.radar.getContext('2d', { alpha: false });
+  if (!ctx || !rctx) return;
+  ctx.imageSmoothingEnabled = false;
+  rctx.imageSmoothingEnabled = false;
+
+  const reduceMedia = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+
+  const state = {
+    W: 384, H: 216, scale: 5, dpr: 1,
+    portrait: false, compactHud: false,
+    depth: START_DEPTH, targetDepth: START_DEPTH, zone: ZONES[2],
+    elapsed: 0, ready: false, arms: false,
+    silent: false, audioEnabled: false,
+    lamp: { angle: -Math.PI / 2, power: 0, warm: 0 },
+    pointer: {
+      x: 0, y: 0, sceneX: 0, sceneY: 0, active: false, inside: false,
+      hasAim: false, type: 'mouse', lastMove: -99
+    },
+    probeX: 192, probeY: 178,
+    sonar: {
+      active: false, t: 0, dur: 1.8, radius: 0, prev: 0, cooldown: 0,
+      hitIds: new Set(), lastLog: -99
+    },
+    signals: [], nextSignalId: 1, nextSpawnAt: 38,
+    particles: [],
+    selected: null, hover: null,
+    timers: [],
+    typing: null, logCount: 0,
+    bgCanvas: null, bgCtx: null, bgKey: '', bgStamp: 0,
+    shadow: null, nextShadow: 16,
+    anomaly: {
+      active: false, t: 0, dur: 3.6, nextAt: 24, logged: false,
+      x: 0.5, y: 0.3, seed: 0, ghostR: 0.55, ghostA: 0
+    },
+    completeUntil: 0, completeFlashUntil: 0,
+    nextAmbient: 32,
+    lastContactLog: -99, lastEchoLog: -99, lastQuietLog: -99,
+    radarAcc: 0, hudAcc: 0,
+    pointers: new Map(), down: null, gesture: null,
+    cueShown: false, cueDismissed: false,
+    reduced: !!(reduceMedia && reduceMedia.matches),
+    limits: { top: false, bottom: false },
+    stopped: false
+  };
+
+  /* ---------------------------------------------------------------------
+     Audio: lazy, low-volume Web Audio ambience. Off by default.
+  --------------------------------------------------------------------- */
+  const ZONE_AUDIO = {
+    PHOTIC: { cutoff: 220, freqs: [55, 82], noise: 0.18 },
+    TWILIGHT: { cutoff: 120, freqs: [48, 71], noise: 0.14 },
+    ABYSSAL: { cutoff: 80, freqs: [36, 54], noise: 0.10 },
+    HADAL: { cutoff: 55, freqs: [30, 45], noise: 0.05 }
+  };
+
+  const Sound = {
+    ctx: null,
+    master: null,
+    ambient: null,
+    enabled: false,
+    zone: 'ABYSSAL',
+    quiet: false,
+    lowpass: null,
+    noiseGain: null,
+    drones: [],
+    bioGain: null,
+
+    build() {
+      const AudioCtor = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtor) return false;
+      try {
+        const audio = new AudioCtor();
+        this.ctx = audio;
+
+        const master = audio.createGain();
+        master.gain.value = 0.0001;
+        master.connect(audio.destination);
+        this.master = master;
+
+        const ambient = audio.createGain();
+        ambient.gain.value = 0.15;
+        ambient.connect(master);
+        this.ambient = ambient;
+
+        const buffer = audio.createBuffer(1, Math.max(1, Math.floor(audio.sampleRate * 2.4)), audio.sampleRate);
+        const data = buffer.getChannelData(0);
+        let last = 0;
+        for (let i = 0; i < data.length; i++) {
+          const white = Math.random() * 2 - 1;
+          last = (last + 0.018 * white) / 1.018;
+          data[i] = last * 2.2;
+        }
+        const noise = audio.createBufferSource();
+        noise.buffer = buffer;
+        noise.loop = true;
+        const lowpass = audio.createBiquadFilter();
+        lowpass.type = 'lowpass';
+        lowpass.frequency.value = 96;
+        lowpass.Q.value = 0.3;
+        const noiseGain = audio.createGain();
+        noiseGain.gain.value = 0.12;
+        noise.connect(lowpass);
+        lowpass.connect(noiseGain);
+        noiseGain.connect(ambient);
+        noise.start();
+        this.lowpass = lowpass;
+        this.noiseGain = noiseGain;
+
+        this.drones = [];
+        [41.2, 57.6].forEach((frequency, index) => {
+          const osc = audio.createOscillator();
+          osc.type = 'sine';
+          osc.frequency.value = frequency;
+          osc.detune.value = index ? 6 : -5;
+          const gain = audio.createGain();
+          gain.gain.value = index ? 0.016 : 0.024;
+          osc.connect(gain);
+          gain.connect(ambient);
+          osc.start();
+          this.drones.push({ osc, gain });
+        });
+
+        // Quiet-only biological bed: two low sines behind a very slow swell.
+        const bioGain = audio.createGain();
+        bioGain.gain.value = 0;
+        const bioTremolo = audio.createGain();
+        bioTremolo.gain.value = 0.55;
+        const bioLfo = audio.createOscillator();
+        bioLfo.type = 'sine';
+        bioLfo.frequency.value = 0.063;
+        const bioLfoGain = audio.createGain();
+        bioLfoGain.gain.value = 0.25;
+        bioLfo.connect(bioLfoGain);
+        bioLfoGain.connect(bioTremolo.gain);
+        [32.1, 47.9].forEach((frequency) => {
+          const osc = audio.createOscillator();
+          osc.type = 'sine';
+          osc.frequency.value = frequency;
+          osc.connect(bioGain);
+          osc.start();
+        });
+        bioGain.connect(bioTremolo);
+        bioTremolo.connect(master);
+        bioLfo.start();
+        this.bioGain = bioGain;
+
+        this.applyTone(true);
+        this.ambient.gain.value = this.quiet ? 0.045 : 0.15;
+        this.bioGain.gain.value = this.quiet ? 0.045 : 0;
+        this.enabled = false;
+        return true;
+      } catch (error) {
+        return false;
+      }
+    },
+
+    async toggle() {
+      const turnOn = !this.enabled;
+      if (!this.ctx && !this.build()) return null;
+      if (!this.ctx) return null;
+
+      if (turnOn) {
+        try {
+          if (this.ctx.state === 'suspended') await this.ctx.resume();
+        } catch (error) {
+          return null;
+        }
+        // Autoplay policies can resolve resume() while leaving the context
+        // suspended. Never advertise audio as enabled in that state.
+        if (this.ctx.state !== 'running') return null;
+      }
+
+      this.enabled = turnOn;
+      const now = this.ctx.currentTime;
+      this.master.gain.cancelScheduledValues(now);
+      this.master.gain.setTargetAtTime(turnOn ? 0.72 : 0.0001, now, 0.06);
+      if (!turnOn) {
+        window.setTimeout(() => {
+          if (!this.enabled && this.ctx && this.ctx.state === 'running') {
+            this.ctx.suspend().catch(() => {});
+          }
+        }, 700);
+      }
+      return turnOn;
+    },
+
+    ensureRunning() {
+      if (!this.enabled || !this.ctx) return;
+      if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
+    },
+
+    applyTone(immediate = false) {
+      if (!this.ctx || !this.lowpass) return;
+      const spec = ZONE_AUDIO[this.zone] || ZONE_AUDIO.ABYSSAL;
+      const now = this.ctx.currentTime;
+      const ramp = immediate ? 0.02 : 0.36;
+      this.lowpass.frequency.setTargetAtTime(this.quiet ? 45 : spec.cutoff, now, ramp);
+      if (this.noiseGain) this.noiseGain.gain.setTargetAtTime(spec.noise, now, ramp);
+      this.drones.forEach((drone, index) => {
+        drone.osc.frequency.setTargetAtTime(spec.freqs[index] || spec.freqs[0], now, 0.42);
+      });
+    },
+
+    setZone(zoneId) {
+      if (!ZONE_AUDIO[zoneId]) return;
+      this.zone = zoneId;
+      this.applyTone();
+    },
+
+    setQuiet(quiet) {
+      this.quiet = Boolean(quiet);
+      if (!this.ctx || !this.ambient) return;
+      const now = this.ctx.currentTime;
+      this.ambient.gain.setTargetAtTime(quiet ? 0.045 : 0.15, now, 0.12);
+      if (this.bioGain) {
+        this.bioGain.gain.setTargetAtTime(quiet ? 0.045 : 0, now, quiet ? 1.8 : 0.8);
+      }
+      this.applyTone();
+    },
+
+    sonar() {
+      if (!this.enabled || !this.ctx || !this.master) return;
+      const audio = this.ctx;
+      const t = audio.currentTime;
+      const osc = audio.createOscillator();
+      const gain = audio.createGain();
+      const delay = audio.createDelay(1);
+      const feedback = audio.createGain();
+      const wet = audio.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(840, t);
+      osc.frequency.exponentialRampToValueAtTime(180, t + 1.25);
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(0.055, t + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 1.35);
+      delay.delayTime.value = 0.34;
+      feedback.gain.value = 0.24;
+      wet.gain.value = 0.42;
+      osc.connect(gain);
+      gain.connect(this.master);
+      gain.connect(delay);
+      delay.connect(wet);
+      delay.connect(feedback);
+      feedback.connect(delay);
+      wet.connect(this.master);
+      osc.start(t);
+      osc.stop(t + 1.4);
+    },
+
+    blip() {
+      if (!this.enabled || !this.ctx || !this.master) return;
+      const audio = this.ctx;
+      const t = audio.currentTime;
+      const osc = audio.createOscillator();
+      const gain = audio.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(760, t);
+      osc.frequency.exponentialRampToValueAtTime(1120, t + 0.08);
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(0.024, t + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
+      osc.connect(gain);
+      gain.connect(this.master);
+      osc.start(t);
+      osc.stop(t + 0.14);
+    },
+
+    thump() {
+      if (!this.enabled || !this.ctx || !this.master) return;
+      const audio = this.ctx;
+      const t = audio.currentTime;
+      const osc = audio.createOscillator();
+      const gain = audio.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(62, t);
+      osc.frequency.exponentialRampToValueAtTime(38, t + 0.55);
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(0.05, t + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.72);
+      osc.connect(gain);
+      gain.connect(this.master);
+      osc.start(t);
+      osc.stop(t + 0.75);
+    },
+
+    confirm() {
+      if (!this.enabled || !this.ctx || !this.master) return;
+      this.thump();
+      const audio = this.ctx;
+      const t = audio.currentTime + 0.04;
+      const osc = audio.createOscillator();
+      const gain = audio.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(82.41, t);
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(0.026, t + 0.14);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 1.5);
+      osc.connect(gain);
+      gain.connect(this.master);
+      osc.start(t);
+      osc.stop(t + 1.55);
+    },
+
+    suspend() {
+      if (this.ctx && this.ctx.state === 'running') {
+        this.ctx.suspend().catch(() => {});
+      }
+    },
+
+    resume() {
+      if (this.ctx && this.enabled && this.ctx.state === 'suspended') {
+        this.ctx.resume().catch(() => {});
+      }
+    }
+  };
+
+  /* ---------------------------------------------------------------------
+     Canvas sizing and the cached dithered water column
+  --------------------------------------------------------------------- */
+  function resizeScene() {
+    const vw = Math.max(200, window.innerWidth || document.documentElement.clientWidth || 384);
+    const vh = Math.max(200, window.innerHeight || document.documentElement.clientHeight || 216);
+    const dpr = clamp(window.devicePixelRatio || 1, 1, 3);
+    // Keep the low-resolution grid, but never let a short window push the
+    // stage taller than the viewport.
+    const cssScale = Math.max(2, Math.min(Math.round(vw / 384), Math.round(vh / 216)));
+    const devScale = Math.max(2, Math.round(cssScale * dpr));
+    const scale = devScale / dpr;
+    const W = Math.max(160, Math.floor(vw / scale));
+    const H = Math.max(120, Math.floor(vh / scale));
+
+    state.W = W;
+    state.H = H;
+    state.scale = scale;
+    state.dpr = dpr;
+    state.portrait = vh > vw * 1.1;
+    state.compactHud = vw <= 820 || vh <= 560;
+    state.probeX = W * 0.5;
+    state.probeY = H * (state.portrait ? 0.62 : state.compactHud ? 0.58 : 0.83);
+    state.zone = zoneAt(state.depth);
+
+    dom.canvas.width = W;
+    dom.canvas.height = H;
+    ctx.imageSmoothingEnabled = false;
+
+    const cssW = W * scale;
+    const cssH = H * scale;
+    const left = (vw - cssW) / 2;
+    const top = (vh - cssH) / 2;
+    dom.stage.style.width = cssW + 'px';
+    dom.stage.style.height = cssH + 'px';
+    dom.stage.style.left = left + 'px';
+    dom.stage.style.top = top + 'px';
+    dom.labels.style.width = cssW + 'px';
+    dom.labels.style.height = cssH + 'px';
+    dom.labels.style.left = left + 'px';
+    dom.labels.style.top = top + 'px';
+
+    state.bgKey = '';
+    buildBackdrop(true);
+  }
+
+  function getBackdropKey() {
+    return state.W + 'x' + state.H + ':' + state.zone.id + ':' + Math.round(state.depth / 8);
+  }
+
+  function ensureBackdrop(force = false) {
+    const key = getBackdropKey();
+    if (!force && key === state.bgKey) return;
+    if (!force && performance.now() - state.bgStamp < 110) return;
+    buildBackdrop(force);
+  }
+
+  function buildBackdrop(force = false) {
+    const key = getBackdropKey();
+    if (!force && key === state.bgKey) return;
+
+    const W = state.W;
+    const H = state.H;
+    if (!state.bgCanvas) {
+      state.bgCanvas = document.createElement('canvas');
+      state.bgCtx = state.bgCanvas.getContext('2d', { alpha: false });
+    }
+    if (state.bgCanvas.width !== W || state.bgCanvas.height !== H) {
+      state.bgCanvas.width = W;
+      state.bgCanvas.height = H;
+    }
+    const bctx = state.bgCtx;
+    const image = bctx.createImageData(W, H);
+    const data = image.data;
+    const ramp = state.zone.ramp;
+    const zone = state.zone;
+    const depthFrac = clamp((state.depth - zone.min) / Math.max(1, zone.max - zone.min), 0, 1);
+    const span = ramp.length - 1;
+
+    for (let y = 0; y < H; y++) {
+      const ty = H > 1 ? y / (H - 1) : 0;
+      const scaled = ty * span;
+      const lower = Math.floor(scaled);
+      const fraction = scaled - lower;
+      const ny = (ty - 0.5) * 2;
+
+      for (let x = 0; x < W; x++) {
+        let index = ramp[Math.min(span, lower + (bayer(x, y) < fraction ? 1 : 0))];
+
+        const nx = (x / Math.max(1, W - 1) - 0.5) * 2;
+        const vignette = clamp((Math.sqrt(nx * nx * 0.82 + ny * ny * 0.55) - 0.5) * 1.6, 0, 1);
+        if (bayer(x + 1, y + 5) < vignette * 0.92) index = Math.max(0, index - 1);
+        if (bayer(x + 5, y + 2) < vignette * 0.22) index = Math.max(0, index - 1);
+
+        // Uneven grain keeps large areas of dither from looking mechanical.
+        if (hash2(x * 0.73 + 11.3, y * 1.17 + 5.7) < 0.013 + depthFrac * 0.014) {
+          index = Math.min(I.shelf, index + 1);
+        }
+
+        // A tiny amount of scattered light survives around the probe housing.
+        const px = (x - state.probeX) / (W * 0.34);
+        const py = (y - state.probeY) / (H * 0.28);
+        const spill = Math.max(0, 1 - (px * px + py * py));
+        if (spill > 0 && bayer(x + 3, y + 1) < spill * 0.085) {
+          index = Math.min(I.trench, index + 1);
+        }
+
+        if (bayer(x + 7, y + 3) < 0.015 + depthFrac * 0.018) index = Math.max(0, index - 1);
+
+        const rgb = PAL_RGB[index];
+        const p = (y * W + x) * 4;
+        data[p] = rgb[0];
+        data[p + 1] = rgb[1];
+        data[p + 2] = rgb[2];
+        data[p + 3] = 255;
+      }
+    }
+
+    bctx.putImageData(image, 0, 0);
+    state.bgKey = key;
+    state.bgStamp = performance.now();
+  }
+
+  /* ---------------------------------------------------------------------
+     Shared scene helpers
+  --------------------------------------------------------------------- */
+  const beamHalf = () => state.portrait ? 0.48 : state.compactHud ? 0.45 : 0.43;
+  const beamRange = () => state.H * (state.portrait ? 0.82 : state.compactHud ? 0.8 : 0.96);
+  const lampOriginX = () => state.probeX;
+  const lampOriginY = () => state.probeY - Math.max(5, Math.round(state.H * 0.027));
+
+  function lightExposureAt(x, y) {
+    const ox = lampOriginX();
+    const oy = lampOriginY();
+    const dx = x - ox;
+    const dy = y - oy;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    // Deep water eats light; the same lamp reaches less far below 900 m.
+    const range = beamRange() * (state.depth > 900 ? 0.9 : 1);
+    if (distance < 2 || distance > range) return 0;
+    const angle = Math.atan2(dy, dx);
+    const diff = Math.abs(wrapAngle(angle - state.lamp.angle));
+    const half = beamHalf();
+    if (diff > half) return 0;
+    const edge = 1 - diff / half;
+    const radial = Math.pow(1 - distance / range, 0.64);
+    return clamp(radial * (0.28 + edge * 0.72) * state.lamp.power, 0, 1);
+  }
+
+  function litEdge(x, y, dimColor) {
+    const exposure = lightExposureAt(x, y);
+    if (exposure > 0.58) return C.foam;
+    if (exposure > 0.31) return C.glow;
+    if (exposure > 0.1) return C.current;
+    return dimColor;
+  }
+
+  function drawPixelText(text, x, y, color, scale = 1, spacing = 1) {
+    let cursor = Math.round(x);
+    const top = Math.round(y);
+    ctx.fillStyle = color;
+    for (const raw of String(text).toUpperCase()) {
+      if (raw === ' ') {
+        cursor += (4 + spacing) * scale;
+        continue;
+      }
+      const glyph = GLYPHS[raw];
+      if (!glyph) {
+        cursor += (4 + spacing) * scale;
+        continue;
+      }
+      for (let row = 0; row < 5; row++) {
+        const bits = glyph[row];
+        for (let column = 0; column < 4; column++) {
+          if (bits[column] === '1') {
+            ctx.fillRect(cursor + column * scale, top + row * scale, scale, scale);
+          }
+        }
+      }
+      cursor += (4 + spacing) * scale;
+    }
+    return cursor;
+  }
+
+  /* ---------------------------------------------------------------------
+     Far layer
+  --------------------------------------------------------------------- */
+  function ridgeTop(nx, seed, base, amplitude) {
+    const wave =
+      Math.sin(nx * 6.4 + seed) * 0.55 +
+      Math.sin(nx * 17.7 + seed * 1.71) * 0.29 +
+      Math.sin(nx * 36.1 + seed * 0.63) * 0.16;
+    return base + wave * amplitude;
+  }
+
+  function drawRidge(now, base, amplitude, color, edgeColor, parallax, seedOffset) {
+    const W = state.W;
+    const H = state.H;
+    const seed = state.zone.seed + seedOffset;
+    const pointerShift = state.pointer.hasAim ? (state.pointer.sceneX / W - 0.5) : 0;
+    const shift = (Math.sin(now * 0.021 + seed) * 0.004 + pointerShift * 0.008) * parallax;
+    const tops = new Array(W);
+    ctx.fillStyle = color;
+
+    for (let x = 0; x < W; x++) {
+      const nx = clamp(x / Math.max(1, W - 1) + shift, 0, 1);
+      const top = Math.round(clamp(ridgeTop(nx, seed, base, amplitude) * H, 0, H));
+      tops[x] = top;
+      ctx.fillRect(x, top, 1, H - top);
+    }
+
+    for (let x = 0; x < W; x++) {
+      const top = tops[x];
+      const exposure = lightExposureAt(x, top + 1);
+      let colorPick = edgeColor;
+      if (exposure > 0.29) colorPick = C.glow;
+      else if (exposure > 0.08) colorPick = C.current;
+      if (exposure > 0.08 || bayer(x, top) < 0.28) {
+        ctx.fillStyle = colorPick;
+        ctx.fillRect(x, top, 1, 1);
+      }
+      if (bayer(x + 2, top + 3) < 0.06) {
+        ctx.fillStyle = bayer(x + 3, top) < 0.5 ? C.pitch : C.deep;
+        ctx.fillRect(x, top + 2 + Math.floor(hash2(x, top) * 7), 1, 1);
+      }
+      // Restore the silhouette colour; otherwise the texture ink bleeds into
+      // the next column's full-height fill and carves bright vertical stripes.
+      ctx.fillStyle = color;
+    }
+  }
+
+  function drawWaterShafts(now) {
+    if (state.zone.id !== 'PHOTIC' && state.zone.id !== 'TWILIGHT') return;
+    const W = state.W;
+    const H = state.H;
+    const influence = state.pointer.hasAim ? (state.pointer.sceneX / W - 0.5) * 4 : 0;
+    for (let ray = 0; ray < 3; ray++) {
+      const topX = W * (0.23 + ray * 0.27) + Math.sin(now * 0.09 + ray * 1.8) * 3 + influence;
+      const length = H * (0.58 + ray * 0.05);
+      for (let y = 0; y < length; y += 2) {
+        const x = Math.round(topX + y * 0.24 + Math.sin(now * 0.16 + y * 0.02 + ray) * 2);
+        if (x < 0 || x >= W) continue;
+        if (bayer(x, y) < (ray === 1 ? 0.052 : 0.032)) {
+          ctx.fillStyle = ray === 1 ? C.current : C.shelf;
+          ctx.fillRect(x, y, 1, 1);
+        }
+      }
+    }
+  }
+
+  function drawArch(cx, baseY, width, height, color, edge) {
+    const left = Math.round(cx - width / 2);
+    const right = Math.round(cx + width / 2);
+    const top = Math.round(baseY - height);
+    const thickness = Math.max(1, Math.round(width * 0.1));
+    ctx.fillStyle = color;
+    ctx.fillRect(left, top, thickness, height);
+    ctx.fillRect(right - thickness, top + Math.round(height * 0.13), thickness, height - Math.round(height * 0.13));
+    ctx.fillRect(left, top, Math.round(width * 0.55), Math.max(1, thickness));
+    ctx.fillRect(right - Math.round(width * 0.28), top + 1, Math.round(width * 0.28), Math.max(1, thickness - 1));
+
+    // Broken masonry and a few dim marks.
+    ctx.fillStyle = color;
+    ctx.fillRect(left - 2, baseY - 2, Math.round(width * 0.2), 2);
+    ctx.fillRect(right - 1, baseY - 3, 3, 3);
+
+    ctx.fillStyle = edge;
+    for (let y = top; y < baseY; y += 2) {
+      if (bayer(left, y) < 0.2) ctx.fillRect(left, y, 1, 1);
+      if (bayer(right, y + 1) < 0.2) ctx.fillRect(right, y, 1, 1);
+    }
+    for (let x = left; x < left + width * 0.55; x += 2) {
+      if (bayer(x, top) < 0.24) ctx.fillRect(x, top, 1, 1);
+    }
+    if (!state.silent && bayer(left + 3, top + 9) < 0.7) {
+      ctx.fillStyle = C.glow;
+      ctx.fillRect(left + Math.round(width * 0.38), top + Math.round(height * 0.42), 1, 1);
+      ctx.fillStyle = C.current;
+      ctx.fillRect(left + Math.round(width * 0.38) + 1, top + Math.round(height * 0.5), 1, 1);
+    }
+  }
+
+  function drawRibs(now) {
+    const W = state.W;
+    const H = state.H;
+    const spineY = Math.round(H * 0.64);
+    const x0 = Math.round(W * 0.57);
+    const x1 = Math.round(W * 0.78);
+    ctx.fillStyle = C.void;
+    ctx.fillRect(x0, spineY, x1 - x0, 2);
+    for (let rib = 0; rib < 5; rib++) {
+      const x = x0 + Math.round((rib + 1) * (x1 - x0) / 6);
+      for (let j = 0; j < 8; j++) {
+        const dx = Math.round(Math.sin(j * 0.72) * (3 + rib * 0.4));
+        if (bayer(x + dx, spineY + j) < 0.68) {
+          ctx.fillStyle = bayer(x + dx, spineY + j) < 0.14 ? C.current : C.shelf;
+          ctx.fillRect(x + dx, spineY + j * 2, 1, 1);
+          ctx.fillRect(x - dx, spineY + j * 2, 1, 1);
+        }
+      }
+    }
+    ctx.fillStyle = C.void;
+    for (let i = 0; i < 3; i++) {
+      ctx.fillRect(x0 + i * 4 - 2, spineY - 3 - i, 2, 1);
+    }
+  }
+
+  function drawFarExtras(now) {
+    const W = state.W;
+    const H = state.H;
+    if (state.zone.extras === 'ruin') {
+      drawArch(W * 0.19, H * 0.68, Math.max(22, W * 0.085), Math.max(16, W * 0.105), C.void, C.current);
+      drawArch(W * 0.79, H * 0.64, Math.max(15, W * 0.052), Math.max(11, W * 0.065), C.void, C.shelf);
+    } else if (state.zone.extras === 'ribs') {
+      drawRibs(now);
+    } else if (state.zone.extras === 'trench') {
+      ctx.fillStyle = C.void;
+      for (let side = 0; side < 2; side++) {
+        const origin = side === 0 ? 0 : W;
+        const direction = side === 0 ? 1 : -1;
+        for (let i = 0; i < Math.round(W * 0.13); i++) {
+          const n = i / Math.max(1, W * 0.13);
+          const top = H * (0.48 + n * 0.18 + Math.sin(n * 8 + state.zone.seed) * 0.03);
+          const x = origin + direction * i;
+          ctx.fillRect(x, Math.round(top), 1, H);
+          if (bayer(x, Math.round(top)) < 0.2) {
+            ctx.fillStyle = C.current;
+            ctx.fillRect(x, Math.round(top), 1, 1);
+            ctx.fillStyle = C.void;
+          }
+        }
+      }
+    }
+  }
+
+  /* ---------------------------------------------------------------------
+     The probe lamp. The cone is sampled radially and stippled with the
+     ordered matrix; no soft alpha is used on the canvas.
+  --------------------------------------------------------------------- */
+  function drawLamp(now) {
+    if (state.lamp.power < 0.008) return;
+    const ox = lampOriginX();
+    const oy = lampOriginY();
+    const range = beamRange();
+    const half = beamHalf();
+    const angle = state.lamp.angle;
+    const power = state.lamp.power;
+    const W = state.W;
+    const H = state.H;
+
+    for (let radius = 3; radius < range; radius += 1.35) {
+      const arc = radius * half * 2;
+      const steps = Math.max(4, Math.ceil(arc / 0.95));
+      const radial = Math.pow(Math.max(0, 1 - radius / range), 0.62);
+      for (let i = 0; i <= steps; i++) {
+        const position = i / steps;
+        const edge = 1 - Math.abs(position * 2 - 1);
+        const intensity = power * radial * (0.26 + edge * 0.74);
+        if (intensity < 0.02) continue;
+        const a = angle - half + position * half * 2;
+        const x = Math.round(ox + Math.cos(a) * radius);
+        const y = Math.round(oy + Math.sin(a) * radius);
+        if (x < 0 || y < 0 || x >= W || y >= H) continue;
+        const threshold = intensity * 0.47;
+        const sample = bayer(x, y);
+        if (sample > threshold) continue;
+        const q = sample / Math.max(0.0001, threshold);
+        let color;
+        if (q < 0.055 && intensity > 0.38) color = C.foam;
+        else if (q < 0.22) color = C.haze;
+        else if (q < 0.6) color = C.glow;
+        else if (q < 0.88) color = C.current;
+        else color = C.shelf;
+        ctx.fillStyle = color;
+        ctx.fillRect(x, y, 1, 1);
+      }
+    }
+
+    // Very sparse spill beyond the hard edge of the cone.
+    if (!state.silent) {
+      for (let radius = 8; radius < range * 0.85; radius += 2.6) {
+        const radial = Math.pow(1 - radius / range, 0.8);
+        for (let side = -1; side <= 1; side += 2) {
+          const a = angle + side * (half + 0.08 + hash(radius + side) * 0.07);
+          const x = Math.round(ox + Math.cos(a) * radius);
+          const y = Math.round(oy + Math.sin(a) * radius);
+          if (x < 0 || y < 0 || x >= W || y >= H) continue;
+          if (bayer(x, y) < radial * 0.055) {
+            ctx.fillStyle = C.current;
+            ctx.fillRect(x, y, 1, 1);
+          }
+        }
+      }
+    }
+
+    // The lamp aperture itself, as a small ordered-dither bloom.
+    ctx.fillStyle = C.glow;
+    for (let y = -8; y <= 4; y++) {
+      for (let x = -9; x <= 9; x++) {
+        const distance = Math.sqrt(x * x + y * y);
+        if (distance > 9) continue;
+        if (bayer(ox + x + 9, oy + y + 9) > (1 - distance / 9) * power * 0.8) continue;
+        ctx.fillStyle = distance < 2.3 ? C.foam : distance < 5 ? C.haze : C.current;
+        ctx.fillRect(Math.round(ox + x), Math.round(oy + y), 1, 1);
+      }
+    }
+  }
+
+  /* ---------------------------------------------------------------------
+     Drifting silhouettes and ambient life
+  --------------------------------------------------------------------- */
+  function drawShadow(now) {
+    const shadow = state.shadow;
+    if (!shadow) return;
+    const p = clamp(shadow.t / shadow.dur, 0, 1);
+    const ease = p * p * (3 - 2 * p);
+    const W = state.W;
+    const H = state.H;
+    const direction = shadow.dir;
+    const start = direction > 0 ? -W * 0.58 : W * 1.2;
+    const end = direction > 0 ? W * 1.15 : -W * 0.5;
+    const headX = start + (end - start) * ease;
+
+    if (shadow.kind === 'eel') {
+      const length = W * 0.62;
+      for (let i = 0; i < length; i += 1) {
+        const t = i / length;
+        const x = Math.round(headX - direction * i);
+        const center = H * 0.37 + Math.sin(t * 7.1 + now * 0.72 + shadow.seed) * H * 0.035 + t * H * 0.035;
+        const taper = Math.sin(clamp(t * 1.08, 0, 1) * Math.PI);
+        const thickness = Math.max(1, Math.round(1 + taper * 5.5));
+        const y = Math.round(center - thickness / 2);
+        ctx.fillStyle = C.void;
+        ctx.fillRect(x, y, 1, thickness);
+        if (bayer(x, y - 1) < 0.11) {
+          ctx.fillStyle = bayer(x, y) < 0.2 ? C.current : C.pitch;
+          ctx.fillRect(x, y - 1, 1, 1);
+        }
+      }
+      const headY = Math.round(H * 0.37 + Math.sin(now * 0.72 + shadow.seed) * H * 0.035);
+      const headBlockX = Math.round(headX + direction * 2);
+      ctx.fillStyle = C.void;
+      ctx.fillRect(headBlockX - 4, headY - 4, 5, 8);
+      ctx.fillStyle = C.void;
+      ctx.fillRect(headBlockX - 1, headY - 6, 3, 2);
+      if (bayer(headBlockX, headY) < 0.8) {
+        ctx.fillStyle = C.glow;
+        ctx.fillRect(headBlockX + 2 * direction, headY - 1, 1, 1);
+      }
+    } else {
+      const length = W * 0.68;
+      for (let i = 0; i < length; i += 1) {
+        const t = i / length;
+        const x = Math.round(headX - direction * i);
+        const profile = Math.pow(Math.sin(clamp(t * 0.98, 0, 1) * Math.PI), 0.72);
+        const thickness = Math.max(1, Math.round(H * 0.085 * profile * (1 - t * 0.22)));
+        const center = H * 0.35 + Math.sin(t * Math.PI * 1.4 + shadow.seed) * H * 0.018 + t * H * 0.02;
+        const y = Math.round(center - thickness / 2);
+        ctx.fillStyle = C.void;
+        ctx.fillRect(x, y, 1, thickness);
+        if (bayer(x, y) < 0.1) {
+          ctx.fillStyle = bayer(x, y + 1) < 0.22 ? C.current : C.pitch;
+          ctx.fillRect(x, y, 1, 1);
+        }
+      }
+      // Tail flukes.
+      const tailX = Math.round(headX - direction * length);
+      const tailY = Math.round(H * 0.35 + H * 0.02);
+      for (let row = 0; row < 4; row++) {
+        ctx.fillStyle = C.void;
+        ctx.fillRect(tailX - direction * row, tailY - row, 1, 1 + row * 2);
+        ctx.fillRect(tailX + direction * row, tailY - row, 1, 1 + row * 2);
+      }
+      const eyeX = Math.round(headX - direction * 2);
+      if (bayer(eyeX, Math.round(H * 0.35)) < 0.7) {
+        ctx.fillStyle = C.shelf;
+        ctx.fillRect(eyeX, Math.round(H * 0.35), 1, 1);
+      }
+    }
+  }
+
+  function drawFloor(now) {
+    const W = state.W;
+    const H = state.H;
+    const base = H * 0.94;
+    ctx.fillStyle = C.void;
+    for (let x = 0; x < W; x++) {
+      const nx = x / Math.max(1, W - 1);
+      const y = Math.round(base + Math.sin(nx * 12.7 + state.zone.seed) * H * 0.008 + Math.sin(nx * 31.5) * H * 0.003);
+      ctx.fillRect(x, y, 1, H - y);
+      const lit = lightExposureAt(x, y);
+      if (lit > 0.08 || bayer(x, y) < 0.2) {
+        ctx.fillStyle = lit > 0.35 ? C.glow : lit > 0.08 ? C.current : C.shelf;
+        ctx.fillRect(x, y, 1, 1);
+        ctx.fillStyle = C.void;
+      }
+      if (bayer(x + 1, y + 2) < 0.045) {
+        ctx.fillStyle = bayer(x, y + 3) < 0.4 ? C.pitch : C.deep;
+        ctx.fillRect(x, y + 2 + Math.floor(hash2(x, y) * 6), 1, 1);
+        ctx.fillStyle = C.void;
+      }
+    }
+  }
+
+  function drawRockMass(x0, x1, height, seed, now) {
+    const W = state.W;
+    const H = state.H;
+    const base = Math.round(H * 0.94);
+    const area = Math.max(2, Math.round((x1 - x0) * W));
+    const start = Math.round(x0 * W);
+    ctx.fillStyle = C.void;
+    for (let i = 0; i < area; i++) {
+      const x = start + i;
+      if (x < 0 || x >= W) continue;
+      const t = i / Math.max(1, area - 1);
+      const profile = Math.pow(Math.sin(clamp(t, 0, 1) * Math.PI), 0.72);
+      const jag = (hash(seed + i * 0.87) - 0.5) * 0.16 + Math.sin(t * 19 + seed) * 0.035;
+      const top = Math.round(base - H * height * profile * (0.9 + jag));
+      ctx.fillRect(x, top, 1, base - top);
+      const lit = lightExposureAt(x, top);
+      let edge = C.shelf;
+      if (lit > 0.45) edge = C.haze;
+      else if (lit > 0.2) edge = C.glow;
+      else if (lit > 0.055) edge = C.current;
+      if (lit > 0.055 || bayer(x, top) < 0.18) {
+        ctx.fillStyle = edge;
+        ctx.fillRect(x, top, 1, 1);
+        ctx.fillStyle = C.void;
+      }
+      if (bayer(x + 2, top + 5) < 0.035) {
+        ctx.fillStyle = C.deep;
+        ctx.fillRect(x, top + 3 + Math.floor(hash2(x, top) * 5), 1, 1);
+        ctx.fillStyle = C.void;
+      }
+    }
+    // A faint cable and small stones on the sediment.
+    if (seed > 3) {
+      ctx.fillStyle = C.shelf;
+      for (let x = Math.round(W * 0.18); x < Math.round(W * 0.44); x += 4) {
+        if (bayer(x, base) < 0.44) ctx.fillRect(x, base + Math.round(Math.sin(x * 0.3) * 1.2), 1, 1);
+      }
+    }
+  }
+
+  function drawKelp(now, side) {
+    const W = state.W;
+    const H = state.H;
+    const baseY = H * 0.91;
+    const origin = side === 0 ? W * 0.055 : W * 0.945;
+    for (let stalk = 0; stalk < 4; stalk++) {
+      const height = H * (0.16 + hash(stalk + side * 9) * 0.12);
+      const baseX = origin + (stalk - 1.5) * 3 + Math.sin(now * 0.23 + stalk) * 1.5;
+      for (let i = 0; i < height; i += 2) {
+        const t = i / height;
+        const x = Math.round(baseX + Math.sin(now * 0.46 + t * 4 + stalk * 1.7) * (1 + t * 2.4));
+        const y = Math.round(baseY - i);
+        const lit = lightExposureAt(x, y);
+        ctx.fillStyle = lit > 0.22 ? C.glow : lit > 0.07 ? C.current : C.shelf;
+        ctx.fillRect(x, y, 1, 1);
+        if (i % 6 === 0) {
+          ctx.fillRect(x + (t % 2 < 1 ? 1 : -1), y, 2, 1);
+        }
+      }
+    }
+  }
+
+  function drawVent(now, cx, baseY, height, seed) {
+    const W = state.W;
+    const H = state.H;
+    const x = Math.round(cx * W);
+    const base = Math.round(baseY * H);
+    const tall = Math.round(height * H);
+    const top = base - tall;
+    ctx.fillStyle = C.void;
+    ctx.fillRect(x - 4, top + Math.round(tall * 0.22), 2, tall - Math.round(tall * 0.22));
+    ctx.fillRect(x + 2, top + Math.round(tall * 0.38), 3, tall - Math.round(tall * 0.38));
+    ctx.fillRect(x - 1, top, 2, tall);
+    ctx.fillStyle = C.current;
+    ctx.fillRect(x - 1, top, 1, 1);
+    ctx.fillRect(x + 1, top + 1, 1, 1);
+    ctx.fillRect(x - 4, top + Math.round(tall * 0.22), 1, 1);
+    ctx.fillRect(x + 4, top + Math.round(tall * 0.38), 1, 1);
+
+    for (let i = 0; i < 12; i++) {
+      const rise = (now * 5.2 + i * 2.7 + seed * 13) % (tall * 1.5 + 10);
+      const px = Math.round(x + Math.sin(now * 0.9 + i * 1.8 + seed) * (2 + rise * 0.12));
+      const py = Math.round(top - rise + 3);
+      if (py < 0 || px < 0 || px >= W) continue;
+      if (bayer(px, py) < 0.62) {
+        const lit = lightExposureAt(px, py);
+        ctx.fillStyle = lit > 0.25 ? C.haze : lit > 0.07 ? C.glow : C.current;
+        ctx.fillRect(px, py, 1, 1);
+      }
+    }
+
+    // Tube worms at the base, each with a single pale tip.
+    for (let i = 0; i < 5; i++) {
+      const wx = x - 7 + i * 3;
+      const wh = 3 + Math.floor(hash(seed + i) * 7);
+      ctx.fillStyle = C.shelf;
+      ctx.fillRect(wx, base - wh, 1, wh);
+      const lit = lightExposureAt(wx, base - wh);
+      ctx.fillStyle = lit > 0.2 ? C.haze : C.current;
+      ctx.fillRect(wx, base - wh, 1, 1);
+    }
+  }
+
+  function drawRuinMid(now) {
+    const W = state.W;
+    const H = state.H;
+    const x = Math.round(W * 0.36);
+    const base = Math.round(H * 0.92);
+    const height = Math.round(H * 0.13);
+    ctx.fillStyle = C.void;
+    ctx.fillRect(x - 7, base - height, 3, height);
+    ctx.fillRect(x + 5, base - height + 4, 3, height - 4);
+    ctx.fillRect(x - 7, base - height, Math.round(W * 0.035), 2);
+    ctx.fillStyle = C.shelf;
+    ctx.fillRect(x - 7, base - height, 1, 1);
+    ctx.fillRect(x + 7, base - height + 4, 1, 1);
+    if (!state.silent && bayer(x, base - height + 8) < 0.65) {
+      ctx.fillStyle = C.glow;
+      ctx.fillRect(x - 2, base - height + 8, 1, 1);
+    }
+  }
+
+  function drawMid(now) {
+    drawFloor(now);
+    drawRockMass(-0.03, 0.29, 0.19, 2.1, now);
+    drawRockMass(0.73, 1.04, 0.16, 7.4, now);
+    drawRockMass(0.43, 0.55, 0.045, 1.2, now);
+
+    if (state.zone.extras === 'kelp') {
+      drawKelp(now, 0);
+      drawKelp(now, 1);
+    }
+    if (state.zone.extras === 'ruin') {
+      drawRuinMid(now);
+    }
+    if (state.zone.id === 'ABYSSAL' || state.zone.id === 'HADAL') {
+      drawVent(now, 0.80, 0.905, 0.13, 2.7);
+      drawVent(now, 0.64, 0.925, 0.07, 5.1);
+    }
+    if (state.zone.id === 'HADAL') {
+      ctx.fillStyle = C.void;
+      for (let i = 0; i < 4; i++) {
+        const x = Math.round(state.W * (0.16 + i * 0.055));
+        const y = Math.round(state.H * 0.9);
+        ctx.fillRect(x, y - i, 3, 1);
+        if (bayer(x, y) < 0.4) {
+          ctx.fillStyle = C.shelf;
+          ctx.fillRect(x + 2, y - i, 1, 1);
+          ctx.fillStyle = C.void;
+        }
+      }
+    }
+  }
+
+  /* ---------------------------------------------------------------------
+     Signals and their pixel labels
+  --------------------------------------------------------------------- */
+  function signalColors(sig) {
+    const heat = (sig.lit || 0) + sig.sonarGlow * 0.45 + (sig.reveal > 0.8 ? 0.08 : 0);
+    if (sig.recorded) {
+      return { main: C.current, mid: C.shelf, dim: C.deep, line: C.shelf };
+    }
+    if (heat > 0.52) return { main: C.foam, mid: C.haze, dim: C.glow, line: C.current };
+    if (heat > 0.22) return { main: C.haze, mid: C.glow, dim: C.current, line: C.shelf };
+    return { main: C.glow, mid: C.current, dim: C.shelf, line: C.deep };
+  }
+
+  function signalPixel(sig, x, y, color) {
+    const px = Math.round(x);
+    const py = Math.round(y);
+    if (px < 0 || py < 0 || px >= state.W || py >= state.H) return;
+    const gate = bayer(px + sig.id * 13, py + sig.id * 7);
+    if (gate > 0.12 + sig.reveal * 0.88) return;
+    ctx.fillStyle = color;
+    ctx.fillRect(px, py, 1, 1);
+  }
+
+  function drawBrackets(cx, cy, radius, color) {
+    const x = Math.round(cx);
+    const y = Math.round(cy);
+    ctx.fillStyle = color;
+    ctx.fillRect(x - radius, y - radius, 3, 1);
+    ctx.fillRect(x - radius, y - radius, 1, 3);
+    ctx.fillRect(x + radius - 2, y - radius, 3, 1);
+    ctx.fillRect(x + radius, y - radius, 1, 3);
+    ctx.fillRect(x - radius, y + radius, 3, 1);
+    ctx.fillRect(x - radius, y + radius - 2, 1, 3);
+    ctx.fillRect(x + radius - 2, y + radius, 3, 1);
+    ctx.fillRect(x + radius, y + radius - 2, 1, 3);
+  }
+
+  function drawSignalArt(sig, now) {
+    if (sig.reveal < 0.015 && !sig.recorded) return;
+    const colors = signalColors(sig);
+    const bob = sig.type.kind === 'organism' ? Math.round(Math.sin(now * 1.15 + sig.phase) * 1) : 0;
+    const ox = Math.round(sig.sx);
+    const oy = Math.round(sig.sy) + bob;
+    const kind = sig.type.kind;
+
+    if (kind === 'organism') {
+      for (let i = -2; i <= 3; i++) signalPixel(sig, ox + i, oy - 6, colors.main);
+      for (let i = -4; i <= 4; i += 2) {
+        signalPixel(sig, ox + i, oy - 5, colors.mid);
+        signalPixel(sig, ox + i, oy - 4, colors.mid);
+      }
+      signalPixel(sig, ox, oy - 5, colors.main);
+      signalPixel(sig, ox - 2, oy - 3, colors.dim);
+      signalPixel(sig, ox + 2, oy - 3, colors.dim);
+      for (let t = 1; t < 7; t++) {
+        const sway = Math.round(Math.sin(now * 1.1 + t * 0.55 + sig.phase) * (0.5 + t * 0.18));
+        signalPixel(sig, ox - 3 + sway, oy - 3 + t, colors.dim);
+        if (t < 5) signalPixel(sig, ox, oy - 2 + t, colors.dim);
+        signalPixel(sig, ox + 3 - sway, oy - 3 + t, colors.dim);
+      }
+    } else if (kind === 'vent') {
+      for (let i = -3; i <= 3; i++) signalPixel(sig, ox + i, oy - 8, colors.mid);
+      for (let i = 0; i < 7; i++) {
+        signalPixel(sig, ox - 3 + (i < 3 ? 0 : 1), oy - 8 + i, colors.mid);
+        signalPixel(sig, ox + 3, oy - 7 + i, colors.dim);
+      }
+      signalPixel(sig, ox - 2, oy - 7, colors.main);
+      signalPixel(sig, ox + 2, oy - 6, colors.main);
+      for (let i = 0; i < 5; i++) {
+        const rise = (now * 3.3 + i * 2.4 + sig.phase) % 13;
+        const px = Math.round(ox + Math.sin(now * 0.8 + i * 1.6) * (1 + rise * 0.15));
+        const py = Math.round(oy - 9 - rise);
+        signalPixel(sig, px, py, i < 2 ? colors.main : colors.dim);
+      }
+    } else if (kind === 'wreck') {
+      for (let i = -9; i <= 8; i++) signalPixel(sig, ox + i, oy - 2, colors.mid);
+      for (let i = 0; i < 6; i++) {
+        signalPixel(sig, ox - 8 + i, oy - 1 + i, colors.mid);
+        signalPixel(sig, ox + 7 - i, oy - 1 + i, colors.mid);
+      }
+      for (let i = -6; i <= 5; i++) signalPixel(sig, ox + i, oy + 4, colors.dim);
+      for (let i = 0; i < 9; i++) signalPixel(sig, ox - 3, oy - 3 - i, colors.mid);
+      for (let i = -2; i <= 1; i++) signalPixel(sig, ox + i, oy - 10, colors.dim);
+      signalPixel(sig, ox + 2, oy - 2, colors.main);
+      signalPixel(sig, ox + 5, oy - 1, colors.main);
+    } else if (kind === 'ruin') {
+      for (let i = 0; i < 12; i++) {
+        signalPixel(sig, ox - 6, oy - i, colors.mid);
+        if (i < 10) signalPixel(sig, ox + 6, oy - i, colors.dim);
+      }
+      for (let i = -6; i <= -2; i++) signalPixel(sig, ox + i, oy - 12, colors.mid);
+      for (let i = 2; i <= 6; i++) signalPixel(sig, ox + i, oy - 12, colors.dim);
+      signalPixel(sig, ox - 1, oy - 7, colors.main);
+      signalPixel(sig, ox + 1, oy - 6, colors.main);
+      signalPixel(sig, ox, oy - 5, colors.dim);
+      ctx.fillStyle = colors.dim;
+      ctx.fillRect(ox - 8, oy, 16, 1);
+    } else {
+      const jitter = Math.round(Math.sin(now * 11 + sig.phase) * 1);
+      const gx = ox + jitter;
+      for (let i = 1; i <= 5; i++) {
+        signalPixel(sig, gx - i, oy - 5, colors.main);
+        signalPixel(sig, gx - 5, oy + i, colors.main);
+      }
+      signalPixel(sig, gx - 2, oy - 2, colors.mid);
+      signalPixel(sig, gx + 2, oy - 2, colors.mid);
+      if (!state.reduced && bayer(gx, oy) < 0.5) {
+        signalPixel(sig, gx + 4, oy + 3, colors.main);
+        signalPixel(sig, gx - 4, oy + 5, colors.dim);
+      }
+    }
+
+    if (sig.recorded) {
+      ctx.fillStyle = C.shelf;
+      ctx.fillRect(ox, oy + 11, 1, 3);
+      ctx.fillRect(ox - 1, oy + 12, 3, 1);
+    }
+
+    if (state.hover === sig || state.selected === sig || sig.labelVisible) {
+      const radius = kind === 'wreck' ? 13 : kind === 'ruin' ? 15 : 11;
+      drawBrackets(ox, oy, radius + (state.selected === sig ? (Math.sin(now * 3) > 0 ? 1 : 0) : 0), colors.line);
+      if (state.hover === sig || state.selected === sig) {
+        drawPixelText(pad(sig.id), ox + radius + 3, oy - radius, colors.main, 1, 1);
+      }
+    }
+
+    if (sig.sonarGlow > 0.1) {
+      const radius = 6 + Math.round((1 - Math.min(1, sig.sonarGlow)) * 12);
+      ctx.fillStyle = C.current;
+      for (let side = -1; side <= 1; side += 2) {
+        ctx.fillRect(ox + side * radius, oy - 2, 1, 5);
+        ctx.fillRect(ox - 2, oy + side * (radius - 2), 5, 1);
+      }
+    }
+
+    if (sig.recorded && state.completeFlashUntil > state.elapsed) {
+      const blink = state.reduced || Math.floor(state.elapsed * 12) % 2 === 0;
+      if (blink) {
+        const radius = kind === 'wreck' ? 15 : kind === 'ruin' ? 17 : 13;
+        drawBrackets(ox, oy, radius, C.foam);
+        ctx.fillStyle = C.haze;
+        ctx.fillRect(ox - 1, oy - 1, 3, 3);
+      }
+    }
+  }
+
+  function drawSignals(now) {
+    for (const sig of state.signals) {
+      drawSignalArt(sig, now);
+    }
+  }
+
+  /* ---------------------------------------------------------------------
+     Particles, probe, sonar, reticle, glitches
+  --------------------------------------------------------------------- */
+  function drawParticles(now) {
+    const W = state.W;
+    const H = state.H;
+    for (const p of state.particles) {
+      const x = Math.round(p.x * W);
+      const y = Math.round(p.y * H);
+      if (x < 0 || y < 0 || x >= W || y >= H) continue;
+      const exposure = lightExposureAt(x, y);
+      if (p.kind === 'bubble') {
+        ctx.fillStyle = exposure > 0.22 ? C.haze : exposure > 0.06 ? C.glow : C.current;
+        ctx.fillRect(x, y, 1, 1);
+        if (bayer(x, y - 1) < 0.55) {
+          ctx.fillStyle = exposure > 0.15 ? C.haze : C.shelf;
+          ctx.fillRect(x, y - 1, 1, 1);
+        }
+      } else {
+        const twinkle = Math.sin(now * p.frequency + p.phase) > 0.82;
+        ctx.fillStyle = exposure > 0.3 ? (twinkle ? C.foam : C.haze)
+          : exposure > 0.09 ? (twinkle ? C.glow : C.current)
+          : (twinkle ? C.current : C.shelf);
+        ctx.fillRect(x, y, 1, 1);
+        if (p.kind === 'plankton' && twinkle && exposure > 0.1 && bayer(x + 1, y) < 0.5) {
+          ctx.fillStyle = C.glow;
+          ctx.fillRect(x + 1, y, 1, 1);
+        }
+      }
+    }
+  }
+
+  function drawProbe(now) {
+    const W = state.W;
+    const x = Math.round(state.probeX);
+    const y = Math.round(state.probeY) + (state.reduced ? 0 : Math.round(Math.sin(now * 1.1) * 1));
+    const live = !state.silent;
+    const lampColor = state.silent ? C.shelf : state.lamp.power > 0.45 ? C.foam : C.haze;
+
+    ctx.fillStyle = C.void;
+    ctx.fillRect(x - 8, y - 3, 17, 8);
+    ctx.fillStyle = live ? C.current : C.shelf;
+    ctx.fillRect(x - 7, y - 3, 15, 1);
+    ctx.fillRect(x - 7, y + 4, 15, 1);
+    ctx.fillRect(x - 7, y - 3, 1, 8);
+    ctx.fillRect(x + 7, y - 3, 1, 8);
+    ctx.fillStyle = C.deep;
+    ctx.fillRect(x - 6, y - 2, 13, 6);
+    ctx.fillStyle = C.shelf;
+    ctx.fillRect(x - 4, y - 1, 2, 1);
+    ctx.fillRect(x + 2, y + 1, 3, 1);
+
+    // Camera dome and the lamp head.
+    ctx.fillStyle = live ? C.current : C.shelf;
+    ctx.fillRect(x - 3, y - 5, 7, 2);
+    ctx.fillStyle = C.deep;
+    ctx.fillRect(x - 2, y - 5, 5, 1);
+    ctx.fillStyle = lampColor;
+    ctx.fillRect(x - 2, y - 7, 5, 2);
+    ctx.fillRect(x - 1, y - 8, 3, 1);
+    ctx.fillStyle = live ? C.glow : C.current;
+    ctx.fillRect(x - 1, y - 6, 3, 1);
+
+    // Side pods and landing skids.
+    ctx.fillStyle = C.current;
+    ctx.fillRect(x - 9, y - 1, 2, 3);
+    ctx.fillRect(x + 8, y - 1, 2, 3);
+    ctx.fillStyle = C.shelf;
+    ctx.fillRect(x - 6, y + 5, 1, 2);
+    ctx.fillRect(x + 5, y + 5, 1, 2);
+    ctx.fillRect(x - 6, y + 6, 4, 1);
+    ctx.fillRect(x + 3, y + 6, 4, 1);
+
+    if (live && Math.sin(now * 2.2) > -0.2) {
+      ctx.fillStyle = C.glow;
+      ctx.fillRect(x + 4, y - 1, 1, 1);
+    }
+  }
+
+  function drawSonar(now) {
+    if (!state.sonar.active) return;
+    const W = state.W;
+    const H = state.H;
+    const ox = state.probeX;
+    const oy = state.probeY - 4;
+    const progress = clamp(state.sonar.t / state.sonar.dur, 0, 1);
+    const fade = 1 - progress;
+    const radii = [state.sonar.radius, state.sonar.radius - 3];
+    for (let ring = 0; ring < radii.length; ring++) {
+      const radius = radii[ring];
+      if (radius < 1) continue;
+      const steps = Math.max(30, Math.ceil(TAU * radius / 1.15));
+      for (let i = 0; i < steps; i++) {
+        const a = i / steps * TAU;
+        const x = Math.round(ox + Math.cos(a) * radius);
+        const y = Math.round(oy + Math.sin(a) * radius);
+        if (x < 0 || y < 0 || x >= W || y >= H) continue;
+        const threshold = ring === 0 ? 0.48 * fade : 0.18 * fade;
+        if (bayer(x, y) > threshold) continue;
+        ctx.fillStyle = ring === 1 ? C.current : fade > 0.45 ? C.glow : C.current;
+        ctx.fillRect(x, y, 1, 1);
+        if (ring === 0 && bayer(x + 1, y) < 0.055) {
+          ctx.fillStyle = C.haze;
+          ctx.fillRect(x, y, 1, 1);
+        }
+      }
+    }
+    if (progress < 0.22) {
+      const flash = Math.round((1 - progress / 0.22) * 9);
+      for (let a = 0; a < TAU; a += 0.42) {
+        const x = Math.round(ox + Math.cos(a) * flash);
+        const y = Math.round(oy + Math.sin(a) * flash);
+        if (bayer(x, y) < 0.6) {
+          ctx.fillStyle = C.haze;
+          ctx.fillRect(x, y, 1, 1);
+        }
+      }
+    }
+  }
+
+  function drawAnomaly(now) {
+    const anomaly = state.anomaly;
+    if (!anomaly.active) return;
+    const W = state.W;
+    const H = state.H;
+    const x = Math.round(anomaly.x * W);
+    const y = Math.round(anomaly.y * H);
+    const flicker = state.reduced || Math.sin(now * 17.3) > -0.45;
+    if (!flicker) return;
+
+    ctx.fillStyle = C.alert;
+    ctx.fillRect(x, y, 1, 1);
+    if (!state.reduced) {
+      const seed = Math.floor(now * 14) + Math.floor(anomaly.seed * 1000);
+      for (let strip = 0; strip < 2; strip++) {
+        const sy = Math.floor(hash(seed + strip * 3.7) * H);
+        const sx = Math.floor(hash(seed + strip * 7.1 + 2) * W * 0.72);
+        const len = Math.max(8, Math.floor(hash(seed + strip + 5) * W * 0.24));
+        ctx.fillStyle = strip === 0 ? C.alert : C.current;
+        for (let i = 0; i < len; i += 2) {
+          if (bayer(sx + i, sy) < 0.35) ctx.fillRect(sx + i, sy, 1, 1);
+        }
+      }
+    }
+    const offset = state.reduced ? 3 : 2 + (Math.sin(now * 9) > 0 ? 1 : 0);
+    ctx.fillStyle = C.alert;
+    ctx.fillRect(x - 8, y - 8, offset, 1);
+    ctx.fillRect(x - 8, y - 8, 1, offset);
+    ctx.fillRect(x + 5, y + 7, offset, 1);
+    ctx.fillRect(x + 7, y + 5, 1, offset);
+    ctx.fillRect(x + 6, y - 7, 2, 1);
+    ctx.fillRect(x - 7, y + 6, 1, 2);
+    ctx.fillStyle = C.current;
+    ctx.fillRect(x - 3, y + 3, 2, 1);
+  }
+
+  function drawReticle(now) {
+    if (!state.pointer.inside) return;
+    if (state.pointer.type === 'touch') return;
+    if (now - state.pointer.lastMove > 8) return;
+    const x = Math.round(state.pointer.sceneX);
+    const y = Math.round(state.pointer.sceneY);
+    const color = state.hover ? C.foam : C.current;
+    const radius = 5;
+    ctx.fillStyle = color;
+    ctx.fillRect(x - radius, y - radius, 2, 1);
+    ctx.fillRect(x - radius, y - radius, 1, 2);
+    ctx.fillRect(x + radius - 1, y - radius, 2, 1);
+    ctx.fillRect(x + radius, y - radius, 1, 2);
+    ctx.fillRect(x - radius, y + radius, 2, 1);
+    ctx.fillRect(x - radius, y + radius - 1, 1, 2);
+    ctx.fillRect(x + radius - 1, y + radius, 2, 1);
+    ctx.fillRect(x + radius, y + radius - 1, 1, 2);
+    ctx.fillStyle = state.hover ? C.haze : C.shelf;
+    ctx.fillRect(x, y, 1, 1);
+    if (bayer(x + 3, y + 2) < 0.26) {
+      ctx.fillStyle = C.shelf;
+      ctx.fillRect(x + 7, y + 5, 1, 1);
+      ctx.fillRect(x - 8, y - 6, 1, 1);
+    }
+  }
+
+  /* ---------------------------------------------------------------------
+     Radar: a 96×96 instrument rather than a miniature map.
+  --------------------------------------------------------------------- */
+  function radarRing(cx, cy, radius, color, threshold = 0.55) {
+    const steps = Math.max(22, Math.ceil(TAU * radius));
+    rctx.fillStyle = color;
+    for (let i = 0; i < steps; i++) {
+      const angle = i / steps * TAU;
+      const x = Math.round(cx + Math.cos(angle) * radius);
+      const y = Math.round(cy + Math.sin(angle) * radius);
+      if (x < 0 || y < 0 || x >= 96 || y >= 96) continue;
+      if (bayer(x, y) < threshold) rctx.fillRect(x, y, 1, 1);
+    }
+  }
+
+  function drawRadar(now) {
+    const size = 96;
+    const cx = 48;
+    const cy = 48;
+    const maxRadius = 42;
+    rctx.fillStyle = C.void;
+    rctx.fillRect(0, 0, size, size);
+
+    // Sparse interior wash and a dotted graticule.
+    for (let y = 8; y < 88; y++) {
+      for (let x = 8; x < 88; x++) {
+        const dx = x - cx;
+        const dy = y - cy;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d > maxRadius) continue;
+        if (bayer(x, y) < 0.035) {
+          rctx.fillStyle = C.abyss;
+          rctx.fillRect(x, y, 1, 1);
+        }
+      }
+    }
+
+    radarRing(cx, cy, 14, C.deep, 0.4);
+    radarRing(cx, cy, 28, C.deep, 0.35);
+    radarRing(cx, cy, 42, C.shelf, 0.48);
+
+    // Crosshair, with a gap around the probe.
+    rctx.fillStyle = C.abyss;
+    for (let i = 12; i < 42; i += 2) {
+      if (bayer(i, 3) < 0.6) {
+        rctx.fillRect(cx + i, cy, 1, 1);
+        rctx.fillRect(cx - i, cy, 1, 1);
+        rctx.fillRect(cx, cy + i, 1, 1);
+        rctx.fillRect(cx, cy - i, 1, 1);
+      }
+    }
+
+    if (!state.silent) {
+      state.radarSweep = state.reduced ? -Math.PI / 2 + 0.8 : now * 1.12;
+    } else if (typeof state.radarSweep !== 'number') {
+      state.radarSweep = -Math.PI / 2;
+    }
+
+    if (!state.silent) {
+      const sweep = state.radarSweep;
+      for (let radius = 4; radius <= maxRadius; radius += 1.25) {
+        const arc = 0.72;
+        const steps = Math.max(5, Math.ceil((radius * arc) / 1.2));
+        for (let i = 0; i <= steps; i++) {
+          const angle = sweep - arc + (i / steps) * arc;
+          const x = Math.round(cx + Math.cos(angle) * radius);
+          const y = Math.round(cy + Math.sin(angle) * radius);
+          if (x < 0 || y < 0 || x >= 96 || y >= 96) continue;
+          const leading = Math.abs(angle - sweep) < 0.035;
+          if (bayer(x, y) < (leading ? 0.46 : 0.19)) {
+            rctx.fillStyle = leading ? C.glow : C.deep;
+            rctx.fillRect(x, y, 1, 1);
+          }
+        }
+      }
+    }
+
+    if (state.sonar.active) {
+      const p = clamp(state.sonar.t / state.sonar.dur, 0, 1);
+      const radius = p * maxRadius;
+      radarRing(cx, cy, radius, C.glow, 0.64);
+      radarRing(cx, cy, Math.max(1, radius - 3), C.current, 0.25);
+    }
+
+    const probeX = state.probeX;
+    const probeY = state.probeY - 8;
+    for (const sig of state.signals) {
+      const active = sig.reveal > 0.2 || sig.recorded || sig.sonarGlow > 0.08;
+      if (!active) continue;
+      if (state.silent && !sig.recorded) continue;
+      let dx = (sig.sx - probeX) / (state.W * 0.64);
+      let dy = (sig.sy - probeY) / (state.H * 0.62);
+      let distance = Math.sqrt(dx * dx + dy * dy);
+      if (distance < 0.18) distance = 0.18;
+      if (distance > 0.96) distance = 0.96;
+      const angle = Math.atan2(dy, dx);
+      const x = Math.round(cx + Math.cos(angle) * distance * maxRadius);
+      const y = Math.round(cy + Math.sin(angle) * distance * maxRadius);
+      if (sig.recorded) {
+        rctx.fillStyle = C.shelf;
+        rctx.fillRect(x - 2, y, 5, 1);
+        rctx.fillRect(x, y - 2, 1, 5);
+        rctx.fillStyle = C.current;
+        rctx.fillRect(x, y, 1, 1);
+      } else {
+        const pulse = !state.reduced && Math.sin(now * 3.7 + sig.phase) > 0.55;
+        rctx.fillStyle = pulse ? C.haze : C.current;
+        rctx.fillRect(x - 1, y - 1, 2, 2);
+        if (sig.sonarGlow > 0.05) {
+          rctx.fillStyle = C.glow;
+          rctx.fillRect(x - 3, y, 7, 1);
+          rctx.fillRect(x, y - 3, 1, 7);
+        }
+      }
+    }
+
+    // The one contact the receiver cannot lock.
+    if (state.anomaly.active) {
+      const a = state.anomaly;
+      const x = Math.round(cx + Math.cos(a.ghostA) * a.ghostR * maxRadius);
+      const y = Math.round(cy + Math.sin(a.ghostA) * a.ghostR * maxRadius);
+      const blink = state.reduced || Math.sin(now * 15) > -0.55;
+      if (blink) {
+        rctx.fillStyle = C.alert;
+        rctx.fillRect(x, y, 1, 1);
+        if (!state.reduced) {
+          rctx.fillRect(x - 3, y - 2, 1, 1);
+          rctx.fillRect(x + 2, y + 2, 1, 1);
+        }
+      }
+    }
+
+    // A logged anomaly leaves a permanent orange fix on the scope.
+    if (state.anomaly.logged) {
+      const a = state.anomaly;
+      let dx = (a.x * state.W - probeX) / (state.W * 0.64);
+      let dy = (a.y * state.H - probeY) / (state.H * 0.62);
+      let distance = Math.sqrt(dx * dx + dy * dy);
+      if (distance < 0.18) distance = 0.18;
+      if (distance > 0.96) distance = 0.96;
+      const angle = Math.atan2(dy, dx);
+      const x = Math.round(cx + Math.cos(angle) * distance * maxRadius);
+      const y = Math.round(cy + Math.sin(angle) * distance * maxRadius);
+      rctx.fillStyle = C.alert;
+      rctx.fillRect(x - 1, y - 1, 3, 3);
+      rctx.fillStyle = C.ember;
+      rctx.fillRect(x, y, 1, 1);
+    }
+
+    // Six archived contacts light the whole ring for three seconds.
+    if (state.completeUntil > state.elapsed) {
+      radarRing(cx, cy, 42, C.glow, 1);
+      radarRing(cx, cy, 39, C.current, 0.8);
+    }
+
+    // Forward marker and emitter.
+    rctx.fillStyle = C.haze;
+    rctx.fillRect(cx, cy - 2, 1, 1);
+    rctx.fillStyle = C.current;
+    rctx.fillRect(cx - 1, cy + 1, 3, 1);
+    rctx.fillRect(cx, cy + 2, 1, 1);
+    if (!state.silent) {
+      rctx.fillStyle = C.glow;
+      rctx.fillRect(cx, cy - 4, 1, 1);
+    }
+  }
+
+  /* ---------------------------------------------------------------------
+     One canvas frame
+  --------------------------------------------------------------------- */
+  function renderScene(now) {
+    ensureBackdrop();
+    if (state.bgCanvas) {
+      ctx.drawImage(state.bgCanvas, 0, 0);
+    } else {
+      ctx.fillStyle = C.void;
+      ctx.fillRect(0, 0, state.W, state.H);
+    }
+
+    drawRidge(now, 0.49, 0.065, state.zone.far, state.zone.edge, 1, 3.7);
+    drawRidge(now, 0.585, 0.045, state.zone.near, state.zone.edge, 1.9, 19.2);
+    drawWaterShafts(now);
+    drawFarExtras(now);
+
+    drawLamp(now);
+    drawShadow(now);
+    drawMid(now);
+    drawSignals(now);
+    drawParticles(now);
+    drawProbe(now);
+    drawSonar(now);
+    drawAnomaly(now);
+    drawReticle(now);
+  }
+
+  /* ---------------------------------------------------------------------
+     Game clock, delayed events, particles
+  --------------------------------------------------------------------- */
+  function later(delay, fn) {
+    state.timers.push({ at: state.elapsed + Math.max(0, delay), fn });
+  }
+
+  function updateTimers() {
+    if (!state.timers.length) return;
+    const due = [];
+    for (let i = state.timers.length - 1; i >= 0; i--) {
+      if (state.elapsed >= state.timers[i].at) {
+        due.push(state.timers[i]);
+        state.timers.splice(i, 1);
+      }
+    }
+    due.sort((a, b) => a.at - b.at);
+    for (const timer of due) timer.fn();
+  }
+
+  function makeParticles() {
+    const count = state.reduced ? 44 : 72;
+    const particles = [];
+    for (let i = 0; i < count; i++) {
+      const roll = Math.random();
+      const kind = roll < 0.17 ? 'bubble' : roll < 0.31 ? 'plankton' : 'snow';
+      const x = kind === 'bubble' ? 0.06 + Math.random() * 0.88 : Math.random();
+      const y = kind === 'bubble' ? 0.52 + Math.random() * 0.47 : Math.random();
+      particles.push({
+        kind,
+        x,
+        y,
+        vx: (Math.random() - 0.5) * 0.0045,
+        vy: kind === 'bubble' ? -(0.009 + Math.random() * 0.019) : 0.0022 + Math.random() * 0.0075,
+        sway: 0.0015 + Math.random() * 0.0055,
+        frequency: 0.45 + Math.random() * 1.6,
+        phase: Math.random() * TAU
+      });
+    }
+    state.particles = particles;
+  }
+
+  function updateParticles(dt) {
+    const speed = state.silent ? 0.42 : 1;
+    for (const p of state.particles) {
+      p.x += (p.vx + Math.sin(state.elapsed * p.frequency + p.phase) * p.sway) * dt * speed;
+      p.y += p.vy * dt * speed;
+      if (p.y < -0.04) {
+        p.y = 1.03;
+        p.x = Math.random();
+      } else if (p.y > 1.04) {
+        p.y = -0.03;
+        p.x = Math.random();
+      }
+      if (p.x < -0.04) p.x = 1.03;
+      else if (p.x > 1.04) p.x = -0.03;
+    }
+  }
+
+  /* ---------------------------------------------------------------------
+     Signal creation and DOM labels
+  --------------------------------------------------------------------- */
+  function updateSignalAria(sig) {
+    if (!sig.el) return;
+    const suffix = sig.recorded ? '已归档。' : '未归档。按下记录。';
+    sig.el.setAttribute(
+      'aria-label',
+      `${sig.type.cn}，${sig.type.en}，编号 ${sig.code}，距离 ${sig.rangeM} 米。${suffix}`
+    );
+    if (sig.markEl) sig.markEl.textContent = sig.recorded ? '◆' : '◇';
+  }
+
+  function createSignalLabel(sig) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'sig-label' + (sig.type.kind === 'echo' ? ' is-alert' : '');
+    button.tabIndex = -1;
+    button.setAttribute('aria-hidden', 'true');
+
+    const top = document.createElement('span');
+    top.className = 'sig-top';
+    const code = document.createElement('span');
+    code.className = 'sig-code';
+    code.textContent = sig.code;
+    const meta = document.createElement('span');
+    const mark = document.createElement('b');
+    mark.className = 'sig-mark';
+    mark.setAttribute('aria-hidden', 'true');
+    mark.textContent = '◇';
+    meta.appendChild(mark);
+    meta.appendChild(document.createTextNode('  ' + sig.rangeM + 'M'));
+    top.appendChild(code);
+    top.appendChild(meta);
+
+    const name = document.createElement('span');
+    name.className = 'sig-name';
+    name.textContent = sig.type.cn;
+    const en = document.createElement('span');
+    en.className = 'sig-en';
+    en.textContent = sig.type.en;
+
+    button.appendChild(top);
+    button.appendChild(name);
+    button.appendChild(en);
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      activateSignal(sig);
+    });
+    button.addEventListener('focus', () => {
+      state.selected = sig;
+      updateLabels();
+    });
+
+    dom.labels.appendChild(button);
+    sig.el = button;
+    sig.markEl = mark;
+    sig.codeEl = code;
+    updateSignalAria(sig);
+    return button;
+  }
+
+  function addSignal(type, x, y) {
+    const id = state.nextSignalId++;
+    const range = type.range || [30, 180];
+    const sig = {
+      id,
+      type,
+      code: type.code + '-' + pad(id),
+      rangeM: Math.round(range[0] + Math.random() * (range[1] - range[0])),
+      baseX: x,
+      baseY: y,
+      x,
+      y,
+      sx: 0,
+      sy: 0,
+      driftX: (1.2 + Math.random() * 4.2) / state.W,
+      driftY: (0.8 + Math.random() * 2.8) / state.H,
+      driftSpeed: 0.045 + Math.random() * 0.12,
+      phase: Math.random() * TAU,
+      reveal: 0,
+      hold: 0,
+      lit: 0,
+      sonarGlow: 0,
+      recorded: false,
+      spotted: false,
+      labelVisible: false,
+      el: null,
+      markEl: null,
+      codeEl: null
+    };
+    sig.sx = Math.round(sig.x * state.W);
+    sig.sy = Math.round(sig.y * state.H);
+    createSignalLabel(sig);
+    state.signals.push(sig);
+    return sig;
+  }
+
+  function safePosition(portrait) {
+    const compactLandscape = state.compactHud && !portrait;
+    const xMin = portrait ? 0.2 : compactLandscape ? 0.24 : 0.26;
+    const xMax = portrait ? 0.8 : compactLandscape ? 0.76 : 0.74;
+    // Compact HUDs occupy the top band; keep contacts in the visible middle.
+    const yMin = portrait ? 0.3 : compactLandscape ? 0.36 : 0.18;
+    const yMax = portrait ? 0.52 : compactLandscape ? 0.54 : 0.49;
+    return {
+      x: xMin + Math.random() * (xMax - xMin),
+      y: yMin + Math.random() * (yMax - yMin)
+    };
+  }
+
+  function generateInitialSignals() {
+    const types = TYPES.slice();
+    for (let i = types.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const swap = types[i];
+      types[i] = types[j];
+      types[j] = swap;
+    }
+    if (types[0].kind === 'echo') {
+      const swap = types[0];
+      types[0] = types[1];
+      types[1] = swap;
+    }
+    const count = 3 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < count; i++) {
+      let position;
+      if (i === 0) {
+        position = {
+          x: 0.47 + Math.random() * 0.06,
+          y: state.portrait
+            ? 0.31 + Math.random() * 0.05
+            : state.compactHud
+              ? 0.38 + Math.random() * 0.06
+              : 0.22 + Math.random() * 0.06
+        };
+      } else {
+        let attempts = 0;
+        do {
+          position = safePosition(state.portrait);
+          attempts++;
+        } while (attempts < 32 && state.signals.some((other) =>
+          Math.abs(other.baseX - position.x) < 0.13 &&
+          Math.abs(other.baseY - position.y) < 0.11
+        ));
+      }
+      addSignal(types[i % types.length], position.x, position.y);
+    }
+  }
+
+  function spawnRandomSignal(announce = true) {
+    if (state.signals.length >= 6) return null;
+    let type = TYPES[Math.floor(Math.random() * TYPES.length)];
+    if (type.kind === 'echo' && Math.random() < 0.55) {
+      const others = TYPES.filter((item) => item.kind !== 'echo');
+      type = others[Math.floor(Math.random() * others.length)];
+    }
+    let position = safePosition(state.portrait);
+    let attempts = 0;
+    while (attempts < 40 && state.signals.some((other) =>
+      Math.abs(other.baseX - position.x) < 0.12 &&
+      Math.abs(other.baseY - position.y) < 0.1
+    )) {
+      position = safePosition(state.portrait);
+      attempts++;
+    }
+    const sig = addSignal(type, position.x, position.y);
+    state.nextSpawnAt = state.elapsed + 32 + Math.random() * 32;
+    if (announce && state.arms) {
+      addLog('SNR', '新的微弱回波进入近场。方位待定。', 'quiet');
+    }
+    updateHud();
+    return sig;
+  }
+
+  /* ---------------------------------------------------------------------
+     Labels follow the low-resolution signal positions without subpixel text.
+  --------------------------------------------------------------------- */
+  function labelScore(sig) {
+    let score = sig.hold * 2 + sig.reveal + sig.lit * 2;
+    if (sig === state.selected) score += 100;
+    if (sig === state.hover) score += 80;
+    if (sig.recorded) score -= 7;
+    return score;
+  }
+
+  function updateLabels() {
+    const maxLabels = state.portrait ? 2 : 3;
+    const candidates = [];
+    if (state.arms) {
+      for (const sig of state.signals) {
+        if (!sig.el) continue;
+        if (sig.reveal < 0.52) continue;
+        if (!(sig.hold > 0 || sig.lit > 0.1 || sig.sonarGlow > 0.08 || sig === state.selected || sig === state.hover)) continue;
+        candidates.push(sig);
+      }
+    }
+    candidates.sort((a, b) => labelScore(b) - labelScore(a));
+
+    const visible = [];
+    const addVisible = (sig) => {
+      if (sig && visible.indexOf(sig) === -1 && visible.length < maxLabels) visible.push(sig);
+    };
+    addVisible(state.selected);
+    addVisible(state.hover);
+    for (const sig of candidates) addVisible(sig);
+    const visibleSet = new Set(visible);
+
+    for (const sig of state.signals) {
+      if (!sig.el) continue;
+      const show = visibleSet.has(sig);
+      if (sig.labelVisible !== show) {
+        sig.labelVisible = show;
+        sig.el.classList.toggle('is-on', show);
+        if (show) {
+          sig.el.tabIndex = 0;
+          sig.el.removeAttribute('aria-hidden');
+        } else {
+          sig.el.tabIndex = -1;
+          sig.el.setAttribute('aria-hidden', 'true');
+        }
+      }
+      if (!show) {
+        if (document.activeElement === sig.el) sig.el.blur();
+        continue;
+      }
+      sig.el.style.left = (sig.sx / state.W * 100).toFixed(3) + '%';
+      sig.el.style.top = (sig.sy / state.H * 100).toFixed(3) + '%';
+      sig.el.classList.toggle('flip', sig.sx > state.W * 0.63);
+      sig.el.classList.toggle('is-archived', sig.recorded);
+      sig.el.classList.toggle('is-hover', sig === state.hover || sig === state.selected);
+    }
+
+    // Two nearby contacts can put their labels on top of each other. Keep the
+    // higher-priority label in place and stack the lower-priority one beneath it.
+    const stageBox = dom.labels.getBoundingClientRect();
+    const placed = [];
+    for (const sig of visible) {
+      if (!sig.el || !sig.labelVisible) continue;
+      const baseTop = (sig.sy / state.H * 100).toFixed(3);
+      let shift = 0;
+      sig.el.style.top = baseTop + '%';
+      let rect = sig.el.getBoundingClientRect();
+      let settled = false;
+      for (let pass = 0; pass < 4 && !settled; pass++) {
+        settled = true;
+        for (const other of placed) {
+          const overlap = rect.left < other.right + 4 && rect.right + 4 > other.left &&
+            rect.top < other.bottom + 4 && rect.bottom + 4 > other.top;
+          if (!overlap) continue;
+          shift += other.bottom - rect.top + 6;
+          sig.el.style.top = 'calc(' + baseTop + '% + ' + shift + 'px)';
+          rect = sig.el.getBoundingClientRect();
+          settled = false;
+          break;
+        }
+      }
+      if (rect.bottom > stageBox.bottom - 4) {
+        sig.labelVisible = false;
+        sig.el.classList.remove('is-on');
+        sig.el.tabIndex = -1;
+        sig.el.setAttribute('aria-hidden', 'true');
+        if (document.activeElement === sig.el) sig.el.blur();
+        continue;
+      }
+      placed.push(rect);
+    }
+  }
+
+  function updateHover() {
+    let best = null;
+    let bestDistance = state.portrait ? 15 : 10.5;
+    if (state.arms && !state.silent && state.pointer.inside && state.pointer.type !== 'touch') {
+      for (const sig of state.signals) {
+        if (sig.reveal < 0.3) continue;
+        const dx = sig.sx - state.pointer.sceneX;
+        const dy = sig.sy - state.pointer.sceneY;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          best = sig;
+        }
+      }
+    }
+    state.hover = best;
+  }
+
+  function pickSignal(sceneX, sceneY, touch) {
+    let best = null;
+    let bestDistance = touch ? 16 : 11;
+    for (const sig of state.signals) {
+      if (sig.reveal < 0.3) continue;
+      const dx = sig.sx - sceneX;
+      const dy = sig.sy - sceneY;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = sig;
+      }
+    }
+    return best;
+  }
+
+  function activateSignal(sig) {
+    if (!sig || !sig.el || !state.arms) return;
+    if (!sig.recorded && sig.rangeM > 160 && sig.sonarGlow <= 0) {
+      const message = '接触距离 ' + sig.rangeM + 'M，需主动声呐确认。';
+      addLog('SNR', message, 'quiet');
+      dom.live.textContent = message;
+      return;
+    }
+    hideCue();
+    state.selected = sig;
+    if (!sig.recorded) {
+      if (sig.reveal < 0.3) return;
+      sig.recorded = true;
+      sig.spotted = true;
+      sig.hold = 5.5;
+      sig.reveal = 1;
+      updateSignalAria(sig);
+      if (sig.markEl) sig.markEl.textContent = '◆';
+      sig.el.classList.add('is-archived');
+      Sound.blip();
+      addLog('ARC', '归档 ' + sig.type.cn + ' / ' + sig.code + '。');
+      state.lastContactLog = state.elapsed;
+      const archived = state.signals.filter((item) => item.recorded).length;
+      if (archived === state.signals.length) {
+        // Only claim the archive is full when all six channels are actually occupied.
+        const full = state.signals.length >= 6;
+        if (full) {
+          state.completeUntil = state.elapsed + 3;
+          state.completeFlashUntil = state.elapsed + 1.2;
+          Sound.confirm();
+          addLog('SYS', '近场六个接触全部归档。DS-07 完成本区段测绘。', 'quiet');
+          dom.live.textContent = '近场六个接触全部归档。DS-07 完成本区段测绘。';
+        } else {
+          state.nextSpawnAt = Math.min(state.nextSpawnAt, state.elapsed + 19);
+          later(1.1, () => addLog('SYS', '全部回波归档。等待新的接触。', 'quiet'));
+        }
+      }
+    } else {
+      dom.live.textContent = '已选择归档记录：' + sig.type.cn + '，编号 ' + sig.code + '。';
+    }
+    updateLabels();
+    updateHud();
+    drawRadar(state.elapsed);
+  }
+
+  /* ---------------------------------------------------------------------
+     Event log with a stepped typewriter (instant under reduced motion)
+  --------------------------------------------------------------------- */
+  function finishTyping() {
+    const typing = state.typing;
+    if (!typing) return;
+    typing.span.textContent = typing.full;
+    if (typing.cursor && typing.cursor.parentNode) typing.cursor.remove();
+    state.typing = null;
+  }
+
+  function addLog(tag, text, kind = '') {
+    if (!dom.logList) return;
+    finishTyping();
+    const now = new Date();
+    const stamp = pad(now.getUTCHours()) + ':' + pad(now.getUTCMinutes()) + ':' + pad(now.getUTCSeconds());
+    const item = document.createElement('li');
+    item.className = 'log-item';
+    if (kind) item.dataset.kind = kind;
+
+    const time = document.createElement('time');
+    time.className = 'log-time';
+    time.dateTime = now.toISOString();
+    time.textContent = stamp;
+    const label = document.createElement('span');
+    label.className = 'log-tag';
+    label.textContent = tag;
+    const wrap = document.createElement('span');
+    wrap.className = 'log-text';
+    const span = document.createElement('span');
+    const cursor = document.createElement('span');
+    cursor.className = 'log-cursor';
+    cursor.setAttribute('aria-hidden', 'true');
+    span.textContent = '';
+    wrap.appendChild(span);
+    item.appendChild(time);
+    item.appendChild(label);
+    item.appendChild(wrap);
+    dom.logList.appendChild(item);
+
+    while (dom.logList.children.length > 5) dom.logList.removeChild(dom.logList.firstElementChild);
+    state.logCount++;
+    if (dom.logCount) dom.logCount.textContent = pad(Math.min(999, state.logCount), 3);
+    dom.live.textContent = tag + '：' + text;
+
+    const full = String(text);
+    if (state.reduced || full.length < 2) {
+      span.textContent = full;
+      return;
+    }
+    wrap.appendChild(cursor);
+    state.typing = {
+      span,
+      cursor,
+      full,
+      chars: Array.from(full),
+      shown: 0,
+      accumulator: 0
+    };
+  }
+
+  function updateTyping(dt) {
+    if (!state.typing) return;
+    const typing = state.typing;
+    typing.accumulator += dt * 56;
+    const count = Math.min(typing.chars.length, Math.floor(typing.accumulator));
+    if (count !== typing.shown) {
+      typing.shown = count;
+      typing.span.textContent = typing.chars.slice(0, count).join('');
+    }
+    if (typing.shown >= typing.chars.length) finishTyping();
+  }
+
+  /* ---------------------------------------------------------------------
+     HUD: all instrument text lives in DOM; the canvas is only the image
+  --------------------------------------------------------------------- */
+  function updateHud() {
+    if (!dom.depthValue) return;
+    const depth = clamp(state.depth, 0, MAX_DEPTH);
+    const tenths = Math.round(depth * 10);
+    const whole = Math.floor(tenths / 10);
+    const decimal = tenths % 10;
+    const temp = temperatureAt(depth);
+    const pressure = pressureAt(depth);
+
+    dom.depthValue.textContent = pad(whole, 4) + '.' + decimal;
+    dom.tempValue.textContent = pad(temp.toFixed(1), 4);
+    dom.pressValue.textContent = pad(pressure.toFixed(1), 4);
+    if (dom.depthMarker) dom.depthMarker.style.left = (clamp(depth / MAX_DEPTH * 100, 0, 100)).toFixed(2) + '%';
+    dom.zoneEn.textContent = state.zone.en;
+    dom.zoneCn.textContent = state.zone.cn;
+
+    dom.tempSub.textContent = depth < 200 ? 'MIXED LAYER'
+      : depth < 600 ? 'FALLING' : depth < 1000 ? 'STABLE' : 'COLD / STABLE';
+    dom.pressSub.textContent = depth > 1200 ? 'HULL LOAD' : 'HULL OK';
+
+    let level = 12;
+    for (const sig of state.signals) {
+      level += sig.reveal * 9;
+      if (sig.recorded) level += 7;
+      if (sig.sonarGlow > 0.1) level += 2;
+    }
+    if (state.sonar.active) level += 18;
+    if (state.silent) level = Math.min(level, 7);
+    if (state.anomaly.active) level = 100;
+    level = clamp(level, 0, 100);
+
+    dom.signalValue.textContent = state.anomaly.active ? 'ERR' : pad(Math.round(level), 3);
+    const bars = state.anomaly.active ? 6 : Math.round(level / 100 * 6);
+    dom.meterBars.forEach((bar, index) => {
+      bar.classList.toggle('on', index < bars);
+      bar.classList.toggle('hot', index === 5 && bars >= 6);
+    });
+
+    const zoneIndex = ZONES.indexOf(state.zone);
+    dom.tapeSegments.forEach((segment, index) => {
+      segment.classList.toggle('on', index < zoneIndex);
+      segment.classList.toggle('now', index === zoneIndex);
+    });
+
+    const now = new Date();
+    dom.clock.textContent = pad(now.getUTCHours()) + ':' + pad(now.getUTCMinutes()) + ':' + pad(now.getUTCSeconds());
+
+    const anomaly = state.anomaly.active;
+    dom.modeValue.classList.remove('quiet', 'ping', 'alert');
+    if (anomaly) {
+      dom.modeValue.textContent = 'CARRIER LOST';
+      dom.modeValue.classList.add('alert');
+    } else if (state.silent) {
+      dom.modeValue.textContent = 'SILENT HOLD';
+      dom.modeValue.classList.add('quiet');
+    } else if (state.sonar.active) {
+      dom.modeValue.textContent = 'PULSE / ACTIVE';
+      dom.modeValue.classList.add('ping');
+    } else {
+      dom.modeValue.textContent = 'PASSIVE DRIFT';
+    }
+
+    dom.ledLamp.classList.remove('on', 'soft', 'alert');
+    dom.ledSonar.classList.remove('on', 'soft', 'alert');
+    dom.ledLink.classList.remove('on', 'soft', 'alert');
+    if (state.silent) dom.ledLamp.classList.add('soft');
+    else if (state.lamp.power > 0.18) dom.ledLamp.classList.add('on');
+    else dom.ledLamp.classList.add('soft');
+    if (anomaly) dom.ledSonar.classList.add('alert');
+    else if (state.sonar.active) dom.ledSonar.classList.add('on');
+    else if (state.silent) dom.ledSonar.classList.add('soft');
+    else dom.ledSonar.classList.add('on');
+    dom.ledLink.classList.add(anomaly ? 'alert' : 'on');
+
+    dom.lampReadout.textContent = pad(Math.round(state.lamp.power * 100), 3);
+    dom.sonarReadout.textContent = anomaly ? 'LOST' : state.silent ? 'OFF' : state.sonar.active ? 'PING' : 'RDY';
+    dom.linkReadout.textContent = anomaly ? 'LOST' : 'OK';
+    dom.statusCode.textContent = anomaly ? 'ERR 7F' : 'DS-07';
+    dom.linkLive.classList.toggle('is-err', anomaly);
+    dom.linkText.textContent = anomaly ? 'CARRIER LOST' : 'LINK STABLE';
+
+    dom.quietBtn.classList.toggle('is-on', state.silent);
+    dom.quietBtn.setAttribute('aria-pressed', state.silent ? 'true' : 'false');
+    dom.quietBtn.setAttribute('aria-label', '静默模式，当前' + (state.silent ? '开启' : '关闭'));
+    dom.quietState.textContent = state.silent ? 'ON' : 'OFF';
+    dom.audioBtn.classList.toggle('is-on', state.audioEnabled);
+    dom.audioBtn.setAttribute('aria-pressed', state.audioEnabled ? 'true' : 'false');
+    dom.audioBtn.setAttribute('aria-label', '环境音频，当前' + (state.audioEnabled ? '开启' : '关闭'));
+    dom.audioState.textContent = state.audioEnabled ? 'ON' : 'OFF';
+    dom.pingBtn.classList.toggle('is-on', state.sonar.active);
+    dom.pingBtn.setAttribute('aria-disabled', state.silent ? 'true' : 'false');
+
+    dom.ascendBtn.setAttribute('aria-disabled', state.targetDepth <= 0.5 ? 'true' : 'false');
+    dom.descendBtn.setAttribute('aria-disabled', state.targetDepth >= MAX_DEPTH - 0.5 ? 'true' : 'false');
+
+    const detected = state.signals.filter((sig) => sig.reveal > 0.2 || sig.recorded).length;
+    dom.echoCount.textContent = anomaly ? '?? ECHO' : pad(detected, 2) + ' ECHO';
+    dom.radarPanel.classList.toggle('is-err', anomaly);
+    dom.radarTag.textContent = anomaly ? 'ERR / ???' : state.silent ? 'R 000M' : 'R 240M';
+    dom.radarNote.textContent = anomaly ? 'UNRESOLVED' : state.silent ? 'EMISSION 0'
+      : state.sonar.active ? 'PULSE ACTIVE' : 'PASSIVE SCAN';
+  }
+
+  /* ---------------------------------------------------------------------
+     Depth, aim, sonar
+  --------------------------------------------------------------------- */
+  function adjustDepth(delta) {
+    if (!Number.isFinite(delta) || delta === 0) return;
+    const previous = state.targetDepth;
+    state.targetDepth = clamp(state.targetDepth + delta, 0, MAX_DEPTH);
+    if (state.targetDepth === previous) {
+      if (state.targetDepth <= 0.5 && !state.limits.top) {
+        state.limits.top = true;
+        addLog('DEP', '抵达浅层安全极限 / 0000 M。', 'quiet');
+      } else if (state.targetDepth >= MAX_DEPTH - 0.5 && !state.limits.bottom) {
+        state.limits.bottom = true;
+        addLog('DEP', '抵达耐压壳体极限 / 1400 M。', 'dep');
+      }
+      return;
+    }
+    if (state.targetDepth > 0.5) state.limits.top = false;
+    if (state.targetDepth < MAX_DEPTH - 0.5) state.limits.bottom = false;
+    hideCue();
+  }
+
+  function updateDepth(dt) {
+    const difference = state.targetDepth - state.depth;
+    if (Math.abs(difference) < 0.02) {
+      state.depth = state.targetDepth;
+    } else {
+      state.depth += difference * Math.min(1, dt * 3.4);
+    }
+    state.depth = clamp(state.depth, 0, MAX_DEPTH);
+    const nextZone = zoneAt(state.depth);
+    if (nextZone.id !== state.zone.id) {
+      state.zone = nextZone;
+      Sound.setZone(nextZone.id);
+      state.bgKey = '';
+      state.nextAmbient = state.elapsed + 22;
+      if (state.arms) {
+        addLog('DEP', '进入 ' + nextZone.cn + ' / ' + nextZone.en + ' ZONE。', 'dep');
+        dom.live.textContent = '进入' + nextZone.cn + '，当前深度' + Math.round(state.depth) + '米。';
+        Sound.thump();
+      }
+    }
+  }
+
+  function updateAim(dt) {
+    let target;
+    if (state.pointer.hasAim) {
+      const dx = state.pointer.sceneX - lampOriginX();
+      const dy = state.pointer.sceneY - lampOriginY();
+      if (dy > -2) {
+        target = dx >= 0 ? -0.12 : -Math.PI + 0.12;
+      } else {
+        target = Math.atan2(dy, dx);
+      }
+    } else {
+      target = -Math.PI / 2 + Math.sin(state.elapsed * 0.17) * 0.22;
+    }
+    const smoothing = Math.min(1, dt * (state.pointer.hasAim ? 9.5 : 1.6));
+    state.lamp.angle += wrapAngle(target - state.lamp.angle) * smoothing;
+    state.lamp.warm = Math.min(1, state.lamp.warm + dt * 0.34);
+
+    const base = state.silent ? 0.32 : 1;
+    const warm = 0.36 + 0.64 * state.lamp.warm;
+    let flicker = state.reduced ? 1 : 0.965 + Math.sin(state.elapsed * 13.1) * 0.025 + Math.sin(state.elapsed * 47.7) * 0.012;
+    if (state.anomaly.active && !state.reduced) {
+      flicker *= 0.52 + 0.48 * (0.5 + 0.5 * Math.sin(state.elapsed * 39));
+    }
+    state.lamp.power = clamp(base * warm * flicker, 0, 1);
+  }
+
+  function fireSonar() {
+    if (state.silent) {
+      if (state.elapsed - state.lastQuietLog > 2.4) {
+        state.lastQuietLog = state.elapsed;
+        addLog('SYS', '静默期间主动声呐锁定。发射通道关闭。', 'quiet');
+      }
+      return false;
+    }
+    if (state.sonar.active || state.sonar.cooldown > 0) return false;
+    state.sonar.active = true;
+    state.sonar.t = 0;
+    state.sonar.radius = 0;
+    state.sonar.prev = 0;
+    state.sonar.cooldown = state.depth > 1150 ? 1.2 : 0.55;
+    state.sonar.hitIds.clear();
+    hideCue();
+    Sound.sonar();
+    dom.live.textContent = '声呐脉冲已发射。';
+    updateHud();
+    drawRadar(state.elapsed);
+    return true;
+  }
+
+  function updateSonar(dt) {
+    if (state.sonar.cooldown > 0) state.sonar.cooldown = Math.max(0, state.sonar.cooldown - dt);
+    if (!state.sonar.active) return;
+    const previous = state.sonar.prev;
+    state.sonar.t += dt;
+    const progress = clamp(state.sonar.t / state.sonar.dur, 0, 1);
+    const maxRadius = Math.hypot(state.W, state.H) * 0.82;
+    state.sonar.radius = maxRadius * (1 - Math.pow(1 - progress, 2.2));
+
+    if (state.arms && !state.silent) {
+      for (const sig of state.signals) {
+        if (state.sonar.hitIds.has(sig.id)) continue;
+        const distance = Math.hypot(sig.sx - state.probeX, sig.sy - (state.probeY - 6));
+        if (distance > previous && distance <= state.sonar.radius + 1.2) {
+          state.sonar.hitIds.add(sig.id);
+          sig.hold = Math.max(sig.hold, 4.4);
+          sig.sonarGlow = Math.max(sig.sonarGlow, 1.5);
+        }
+      }
+
+      const anomaly = state.anomaly;
+      if (anomaly.active && !anomaly.logged) {
+        const ax = anomaly.x * state.W;
+        const ay = anomaly.y * state.H;
+        const distance = Math.hypot(ax - state.probeX, ay - (state.probeY - 6));
+        if (distance > previous && distance <= state.sonar.radius + 1.2) {
+          anomaly.logged = true;
+          state.sonar.hitIds.add('anomaly');
+          const bearing = (Math.atan2(ax - state.probeX, (state.probeY - 6) - ay) * 180 / Math.PI + 360) % 360;
+          addLog('???', '异常接触已记录。方位 ' + pad(Math.round(bearing) % 360, 3) + '°。内容不可解析。', 'alert');
+          dom.live.textContent = '异常接触已记录，方位' + Math.round(bearing) + '度。';
+          updateHud();
+          drawRadar(state.elapsed);
+        }
+      }
+    }
+    state.sonar.prev = state.sonar.radius;
+
+    if (progress >= 1) {
+      const hits = state.sonar.hitIds.size;
+      state.sonar.active = false;
+      state.sonar.radius = 0;
+      if (state.arms && !state.silent && state.elapsed - state.lastEchoLog > 8) {
+        state.lastEchoLog = state.elapsed;
+        if (hits > 0) {
+          addLog('SNR', '回波确认：' + pad(hits) + ' 个接触。方位已标记。', 'quiet');
+        } else if (state.elapsed > 12) {
+          addLog('SNR', '近场无回波。只有背景噪声。', 'quiet');
+        }
+      }
+      updateHud();
+    }
+  }
+
+  function updateSignals(dt) {
+    const W = state.W;
+    const H = state.H;
+    const hoverRadius = state.portrait ? 15 : 11;
+    const depthPenalty = state.depth > 1150 ? 0.67 : state.depth > 900 ? 0.85 : 1;
+
+    for (const sig of state.signals) {
+      sig.x = sig.baseX + Math.sin(state.elapsed * sig.driftSpeed + sig.phase) * sig.driftX;
+      sig.y = sig.baseY + Math.cos(state.elapsed * sig.driftSpeed * 0.63 + sig.phase * 1.7) * sig.driftY;
+      sig.sx = Math.round(clamp(sig.x * W, 8, W - 8));
+      sig.sy = Math.round(clamp(sig.y * H, 18, H - 18));
+      sig.lit = lightExposureAt(sig.sx, sig.sy);
+      sig.sonarGlow = Math.max(0, sig.sonarGlow - dt * 1.15);
+
+      const pointerNear = !state.silent && state.arms && state.pointer.inside &&
+        state.pointer.type !== 'touch' &&
+        Math.hypot(sig.sx - state.pointer.sceneX, sig.sy - state.pointer.sceneY) < hoverRadius;
+
+      if (state.arms && !state.silent) {
+        if (sig.lit > 0.11) sig.hold = Math.max(sig.hold, 2.1);
+        if (pointerNear) sig.hold = Math.max(sig.hold, 1.35);
+        sig.hold = Math.max(0, sig.hold - dt * 2.2);
+      } else {
+        // Silence holds an optical label longer (1.0 vs 2.2), so the screen
+        // feels like it is listening rather than simply switched off.
+        sig.hold = Math.max(0, sig.hold - dt * 1.0);
+      }
+
+      let target = 0;
+      if (state.arms && (sig.hold > 0 || (!state.silent && (sig.lit > 0.08 || sig.sonarGlow > 0.08)))) target = 1;
+      else if (sig.recorded) target = 0.22;
+      const speed = (target > sig.reveal ? 4.8 : 1.35) * depthPenalty;
+      sig.reveal += (target - sig.reveal) * Math.min(1, dt * speed);
+      sig.reveal = clamp(sig.reveal, 0, 1);
+
+      if (state.arms && !state.silent && sig.reveal > 0.55 && !sig.spotted) {
+        sig.spotted = true;
+        if (state.elapsed - state.lastContactLog > 4.2) {
+          state.lastContactLog = state.elapsed;
+          addLog('OPT', '光学接触：' + sig.type.cn + ' / ' + sig.code + '。');
+        }
+      }
+    }
+  }
+
+  /* ---------------------------------------------------------------------
+     Scheduled strangeness: a passing silhouette and the unresolved echo
+  --------------------------------------------------------------------- */
+  function updateShadow(dt) {
+    if (state.shadow) {
+      state.shadow.t += dt;
+      if (state.shadow.t >= state.shadow.dur) state.shadow = null;
+      return;
+    }
+    if (!state.arms || state.elapsed < state.nextShadow || state.anomaly.active) return;
+    const kind = Math.random() < 0.58 ? 'eel' : 'whale';
+    state.shadow = {
+      kind,
+      t: 0,
+      dur: 3.2,
+      dir: Math.random() < 0.5 ? 1 : -1,
+      seed: Math.random() * 10
+    };
+    state.nextShadow = state.elapsed + 34 + Math.random() * 26;
+    addLog('OPT', kind === 'eel'
+      ? '长体轮廓横穿光锥边缘。距离不可解。'
+      : '大型轮廓遮蔽背景。体积估算失败。');
+    dom.live.textContent = '大型轮廓穿过视野。距离不可解。';
+  }
+
+  function triggerAnomaly() {
+    const anomaly = state.anomaly;
+    anomaly.active = true;
+    anomaly.t = 0;
+    anomaly.nextAt = state.elapsed + 48 + Math.random() * 38;
+    anomaly.x = 0.18 + Math.random() * 0.64;
+    anomaly.y = 0.2 + Math.random() * 0.32;
+    anomaly.seed = Math.random() * 1000;
+    anomaly.ghostR = 0.4 + Math.random() * 0.5;
+    anomaly.ghostA = Math.random() * TAU;
+    anomaly.logged = false;
+    addLog('???', '▓▒░ 0x7F ... 无法锁定 / CARRIER LOST', 'alert');
+    Sound.thump();
+    hideCue();
+    updateHud();
+  }
+
+  function updateAnomaly(dt) {
+    const anomaly = state.anomaly;
+    if (!anomaly.active) {
+      if (state.arms && state.elapsed >= anomaly.nextAt) triggerAnomaly();
+      return;
+    }
+    anomaly.t += dt;
+    anomaly.ghostA += dt * 0.7;
+    const tearing = !state.reduced && (anomaly.t < 0.17 || (anomaly.t > 1.9 && anomaly.t < 2.07));
+    if (tearing) {
+      dom.screen.classList.remove('is-anomaly');
+      dom.screen.classList.add('is-tearing');
+    } else {
+      dom.screen.classList.remove('is-tearing');
+      if (!state.reduced) dom.screen.classList.add('is-anomaly');
+    }
+
+    if (anomaly.t >= anomaly.dur) {
+      anomaly.active = false;
+      dom.screen.classList.remove('is-anomaly', 'is-tearing');
+      anomaly.nextAt = state.elapsed + 46 + Math.random() * 36;
+      addLog('SYS', anomaly.logged
+        ? '异常接触已归档。信号源消失。'
+        : '异常接触丢失。缓冲区没有留下可解析记录。', 'quiet');
+      updateHud();
+    }
+  }
+
+  function updateAmbient(dt) {
+    if (!state.arms || state.silent) return;
+    if (state.elapsed < state.nextAmbient) return;
+    if (state.anomaly.active) {
+      state.nextAmbient = state.elapsed + 10;
+      return;
+    }
+    const lines = AMBIENT[state.zone.id] || AMBIENT.ABYSSAL;
+    let text = lines[Math.floor(Math.random() * lines.length)];
+    if (text === state.lastAmbient) text = lines[(lines.indexOf(text) + 1) % lines.length];
+    state.lastAmbient = text;
+    addLog('ENV', text, 'quiet');
+    state.nextAmbient = state.elapsed + 31 + Math.random() * 28;
+  }
+
+  function updateSpawns() {
+    if (!state.arms || state.silent) return;
+    if (state.elapsed < state.nextSpawnAt) return;
+    if (state.signals.length >= 6) {
+      state.nextSpawnAt = state.elapsed + 26 + Math.random() * 22;
+      return;
+    }
+    spawnRandomSignal(true);
+  }
+
+  /* ---------------------------------------------------------------------
+     Mode switches and reset
+  --------------------------------------------------------------------- */
+  function showCue() {
+    if (state.cueDismissed || state.cueShown || !dom.introCue) return;
+    state.cueShown = true;
+    dom.introCue.classList.remove('is-off');
+    dom.introCue.classList.add('is-visible');
+  }
+
+  function hideCue(immediate = false) {
+    state.cueDismissed = true;
+    if (!dom.introCue) return;
+    dom.introCue.classList.remove('is-visible');
+    if (immediate) {
+      dom.introCue.classList.add('is-off');
+    } else {
+      dom.introCue.classList.add('is-off');
+    }
+  }
+
+  function toggleSilent() {
+    state.silent = !state.silent;
+    state.hover = null;
+    hideCue();
+    if (state.silent) {
+      state.sonar.active = false;
+      state.sonar.radius = 0;
+      for (const sig of state.signals) {
+        // Keep the last optical hold; silence should not blank a live label.
+        sig.sonarGlow = 0;
+      }
+      Sound.setQuiet(true);
+      addLog('SYS', '静默协议启用。主动扫描停止。', 'quiet');
+    } else {
+      Sound.setQuiet(false);
+      addLog('SYS', '静默协议解除。光学增益恢复。');
+    }
+    dom.live.textContent = state.silent ? '静默模式开启。声呐停止，光锥变暗。' : '静默模式关闭。';
+    updateLabels();
+    updateHud();
+    drawRadar(state.elapsed);
+  }
+
+  async function toggleAudio() {
+    try {
+      const enabled = await Sound.toggle();
+      if (enabled === null) {
+        state.audioEnabled = false;
+        addLog('AUD', '音频总线不可用。接收器保持静音。', 'quiet');
+        updateHud();
+        return;
+      }
+      state.audioEnabled = enabled;
+      if (enabled) {
+        Sound.setQuiet(state.silent);
+        addLog('AUD', '环境音频接入。输出电平 -24 DB。', 'quiet');
+      } else {
+        addLog('AUD', '环境音频关闭。', 'quiet');
+      }
+      updateHud();
+    } catch (error) {
+      state.audioEnabled = false;
+      addLog('AUD', '音频总线不可用。握手失败。', 'quiet');
+      updateHud();
+    }
+  }
+
+  function resetProbe() {
+    state.timers.length = 0;
+    finishTyping();
+    dom.screen.classList.remove('is-anomaly', 'is-tearing');
+    dom.radarPanel.classList.remove('is-err');
+    if (dom.labels) dom.labels.replaceChildren();
+    for (const sig of state.signals) {
+      if (sig.el && sig.el.parentNode) sig.el.remove();
+    }
+    state.signals = [];
+    state.nextSignalId = 1;
+    state.selected = null;
+    state.hover = null;
+    state.silent = false;
+    state.sonar.active = false;
+    state.sonar.t = 0;
+    state.sonar.radius = 0;
+    state.sonar.prev = 0;
+    state.sonar.cooldown = 0;
+    state.sonar.hitIds.clear();
+    state.depth = START_DEPTH;
+    state.targetDepth = START_DEPTH;
+    state.zone = zoneAt(START_DEPTH);
+    Sound.setZone(state.zone.id);
+    state.lamp.angle = -Math.PI / 2;
+    state.lamp.warm = 0.2;
+    state.lamp.power = 0.3;
+    state.pointers.clear();
+    state.down = null;
+    state.gesture = null;
+    state.pointer.active = false;
+    state.pointer.inside = false;
+    state.pointer.hasAim = false;
+    state.pointer.type = 'mouse';
+    state.pointer.sceneX = state.W * 0.5;
+    state.pointer.sceneY = state.H * 0.2;
+    state.pointer.lastMove = -99;
+    state.shadow = null;
+    state.nextShadow = 15;
+    state.anomaly.active = false;
+    state.anomaly.t = 0;
+    state.anomaly.nextAt = 24;
+    state.anomaly.logged = false;
+    state.completeUntil = 0;
+    state.completeFlashUntil = 0;
+    state.nextAmbient = 32;
+    state.nextSpawnAt = 38;
+    state.lastContactLog = -99;
+    state.lastEchoLog = -99;
+    state.lastQuietLog = -99;
+    state.lastAmbient = '';
+    state.limits.top = false;
+    state.limits.bottom = false;
+    state.elapsed = 0;
+    state.hudAcc = 0;
+    state.radarAcc = 0;
+    state.logCount = 0;
+    state.typing = null;
+    state.bgKey = '';
+    state.bgStamp = 0;
+    if (dom.logList) dom.logList.replaceChildren();
+    if (dom.logCount) dom.logCount.textContent = '000';
+    dom.introCue.classList.remove('is-visible');
+    dom.introCue.classList.add('is-off');
+    state.cueDismissed = true;
+    Sound.setQuiet(false);
+    makeParticles();
+    generateInitialSignals();
+    buildBackdrop(true);
+    state.arms = true;
+    updateHud();
+    drawRadar(0);
+    addLog('SYS', '系统复位 / COLD START 完成。当前深度 0688 M。', 'quiet');
+    later(2.3, () => addLog('OPT', '光学阵列重新校准。增益恢复。', 'quiet'));
+    later(6.2, () => addLog('SNR', '背景噪声重建。近场回波待分类。', 'quiet'));
+  }
+
+  function scheduleOpening() {
+    later(3.2, () => {
+      state.arms = true;
+      addLog('SYS', '光学阵列唤醒。当前深度 0688 米。');
+      dom.live.textContent = '光学阵列唤醒。当前深度六百八十八米。';
+      updateHud();
+    });
+    later(4.9, showCue);
+    later(6.6, () => addLog('OPT', '光锥稳定。未校准接触需人工确认。', 'quiet'));
+    later(11.1, () => addLog('SNR', '背景噪声下降。近场存在未分类回波。', 'quiet'));
+    later(18, () => hideCue());
+  }
+
+  /* ---------------------------------------------------------------------
+     Frame loop: 30fps ceiling, fixed-ish delta, blocked rendering when hidden
+  --------------------------------------------------------------------- */
+  let rafId = 0;
+  let lastFrame = 0;
+  let resizeTimer = 0;
+
+  function tick(dt) {
+    state.elapsed += dt;
+    updateTimers();
+    updateDepth(dt);
+    updateAim(dt);
+    updateSonar(dt);
+    updateSignals(dt);
+    updateHover();
+    updateLabels();
+    updateParticles(dt);
+    updateShadow(dt);
+    updateAnomaly(dt);
+    updateAmbient(dt);
+    updateSpawns();
+    updateTyping(dt);
+
+    state.hudAcc += dt;
+    if (state.hudAcc >= 0.1) {
+      state.hudAcc = 0;
+      updateHud();
+    }
+    state.radarAcc += dt;
+    if (state.radarAcc >= 0.09) {
+      state.radarAcc = 0;
+      drawRadar(state.elapsed);
+    }
+    renderScene(state.elapsed);
+  }
+
+  function frame(timestamp) {
+    rafId = window.requestAnimationFrame(frame);
+    if (!lastFrame) {
+      lastFrame = timestamp;
+      return;
+    }
+    const delta = timestamp - lastFrame;
+    if (delta < 31.5) return;
+    lastFrame = timestamp;
+    tick(Math.min(0.09, Math.max(0.016, delta / 1000)));
+  }
+
+  function startLoop() {
+    if (rafId || state.stopped || document.hidden) return;
+    lastFrame = 0;
+    rafId = window.requestAnimationFrame(frame);
+  }
+
+  function stopLoop() {
+    if (rafId) window.cancelAnimationFrame(rafId);
+    rafId = 0;
+    lastFrame = 0;
+  }
+
+  /* ---------------------------------------------------------------------
+     Pointer / touch input
+  --------------------------------------------------------------------- */
+  function scenePoint(clientX, clientY) {
+    const rect = dom.canvas.getBoundingClientRect();
+    const width = Math.max(1, rect.width);
+    const height = Math.max(1, rect.height);
+    return {
+      x: clamp((clientX - rect.left) / width, 0, 1) * state.W,
+      y: clamp((clientY - rect.top) / height, 0, 1) * state.H
+    };
+  }
+
+  function setPointer(event, inside) {
+    const point = scenePoint(event.clientX, event.clientY);
+    const pointer = state.pointer;
+    pointer.x = event.clientX;
+    pointer.y = event.clientY;
+    pointer.sceneX = point.x;
+    pointer.sceneY = point.y;
+    pointer.inside = inside;
+    pointer.type = event.pointerType || pointer.type;
+    pointer.lastMove = state.elapsed;
+  }
+
+  function averageTouchY() {
+    let total = 0;
+    let count = 0;
+    state.pointers.forEach((pointer) => {
+      total += pointer.y;
+      count++;
+    });
+    return count ? total / count : 0;
+  }
+
+  function onPointerDown(event) {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    // A bfcache return can leave the context suspended behind an ON label.
+    Sound.ensureRunning();
+    hideCue();
+    setPointer(event, true);
+    state.pointer.active = true;
+    state.pointer.hasAim = true;
+    const point = scenePoint(event.clientX, event.clientY);
+    state.pointers.set(event.pointerId, {
+      x: event.clientX,
+      y: event.clientY,
+      startX: event.clientX,
+      startY: event.clientY
+    });
+    if (event.pointerType === 'touch' && state.pointers.size === 2) {
+      state.gesture = { lastY: averageTouchY() };
+      state.down = null;
+    } else {
+      state.down = {
+        id: event.pointerId,
+        x: point.x,
+        y: point.y,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        started: performance.now()
+      };
+    }
+    try {
+      dom.interaction.setPointerCapture(event.pointerId);
+    } catch (error) { /* capture is a convenience, not a requirement */ }
+    if (event.cancelable) event.preventDefault();
+  }
+
+  function onPointerMove(event) {
+    const record = state.pointers.get(event.pointerId);
+    const inside = event.pointerType !== 'touch' || Boolean(record);
+    setPointer(event, inside);
+    if (event.pointerType !== 'touch' || record) state.pointer.hasAim = true;
+
+    if (record) {
+      record.x = event.clientX;
+      record.y = event.clientY;
+    }
+
+    if (event.pointerType === 'touch' && state.gesture && state.pointers.size >= 2) {
+      const average = averageTouchY();
+      const delta = state.gesture.lastY - average;
+      if (Math.abs(delta) > 0.4) {
+        state.gesture.lastY = average;
+        adjustDepth(-delta * 1.15);
+      }
+      return;
+    }
+
+    if (event.cancelable && event.buttons) event.preventDefault();
+  }
+
+  function onPointerUp(event) {
+    const record = state.pointers.get(event.pointerId);
+    const pointerCount = state.pointers.size;
+    const hadGesture = Boolean(state.gesture);
+    let tap = false;
+    if (record && state.down && state.down.id === event.pointerId && pointerCount === 1 && !hadGesture) {
+      const travel = Math.hypot(record.x - state.down.clientX, record.y - state.down.clientY);
+      const duration = performance.now() - state.down.started;
+      tap = travel < 8 && duration < 520;
+    }
+
+    state.pointers.delete(event.pointerId);
+    if (state.pointers.size < 2) state.gesture = null;
+    if (state.down && state.down.id === event.pointerId) state.down = null;
+    state.pointer.active = state.pointers.size > 0;
+    if (event.pointerType === 'touch') {
+      state.pointer.inside = false;
+    } else {
+      setPointer(event, true);
+    }
+
+    if (tap) handleTap(event);
+    else if (state.pointers.size === 0) {
+      state.hover = null;
+      updateLabels();
+    }
+
+    try {
+      dom.interaction.releasePointerCapture(event.pointerId);
+    } catch (error) { /* nothing captured */ }
+  }
+
+  function onPointerCancel(event) {
+    state.pointers.delete(event.pointerId);
+    if (state.pointers.size < 2) state.gesture = null;
+    if (state.down && state.down.id === event.pointerId) state.down = null;
+    state.pointer.active = state.pointers.size > 0;
+    if (event.pointerType === 'touch') state.pointer.inside = false;
+    state.hover = null;
+    updateLabels();
+    try {
+      dom.interaction.releasePointerCapture(event.pointerId);
+    } catch (error) { /* nothing captured */ }
+  }
+
+  function onPointerLeave(event) {
+    if (event.pointerType === 'touch') return;
+    state.pointer.inside = false;
+    if (!state.pointers.size) state.pointer.active = false;
+    state.hover = null;
+    updateLabels();
+  }
+
+  function onPointerEnter(event) {
+    setPointer(event, true);
+    if (event.pointerType !== 'touch') state.pointer.hasAim = true;
+  }
+
+  function handleTap(event) {
+    const point = scenePoint(event.clientX, event.clientY);
+    const touch = event.pointerType === 'touch';
+    const hit = pickSignal(point.x, point.y, touch);
+    if (hit) {
+      activateSignal(hit);
+    } else {
+      state.selected = null;
+      updateLabels();
+      fireSonar();
+    }
+    hideCue();
+  }
+
+  function onWheel(event) {
+    if (event.ctrlKey) return;
+    if (event.cancelable) event.preventDefault();
+    if (!event.deltaY) return;
+    hideCue();
+    adjustDepth(event.deltaY > 0 ? 18 : -18);
+  }
+
+  function onKeyDown(event) {
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    const target = event.target;
+    if (target && target.closest && target.closest('input, textarea, select, [contenteditable="true"]')) return;
+    const key = event.key;
+    const onControl = target && target.closest && target.closest('button, a, [role="button"]');
+
+    if ((key === ' ' || key === 'Spacebar') && !onControl) {
+      if (event.repeat) return;
+      event.preventDefault();
+      hideCue();
+      fireSonar();
+      return;
+    }
+    if (key === 's' || key === 'S') {
+      if (event.repeat) return;
+      event.preventDefault();
+      hideCue();
+      toggleSilent();
+      return;
+    }
+    if (key === 'r' || key === 'R') {
+      if (event.repeat) return;
+      event.preventDefault();
+      resetProbe();
+      return;
+    }
+    if (key === 'Escape' || key === 'Esc') {
+      event.preventDefault();
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      state.selected = null;
+      updateLabels();
+      dom.live.textContent = '已取消选择。';
+      hideCue();
+      return;
+    }
+    if (key === 'ArrowUp') {
+      event.preventDefault();
+      hideCue();
+      adjustDepth(-35);
+      return;
+    }
+    if (key === 'ArrowDown') {
+      event.preventDefault();
+      hideCue();
+      adjustDepth(35);
+    }
+  }
+
+  /* ---------------------------------------------------------------------
+     Binding, lifecycle, boot and first frame
+  --------------------------------------------------------------------- */
+  function onResize() {
+    if (resizeTimer) window.clearTimeout(resizeTimer);
+    resizeTimer = window.setTimeout(() => {
+      resizeTimer = 0;
+      resizeScene();
+      updateHud();
+      updateLabels();
+      drawRadar(state.elapsed);
+      renderScene(state.elapsed);
+    }, 160);
+  }
+
+  function onVisibilityChange() {
+    if (document.hidden) {
+      stopLoop();
+      if (state.audioEnabled) Sound.suspend();
+      return;
+    }
+    if (state.audioEnabled) Sound.resume();
+    lastFrame = 0;
+    startLoop();
+    updateHud();
+    drawRadar(state.elapsed);
+  }
+
+  function onReducedMotionChange(event) {
+    state.reduced = event.matches;
+    if (state.reduced) {
+      finishTyping();
+      dom.screen.classList.remove('is-anomaly', 'is-tearing');
+    }
+    updateHud();
+  }
+
+  function bindEvents() {
+    dom.interaction.addEventListener('pointerdown', onPointerDown, { passive: false });
+    dom.interaction.addEventListener('pointermove', onPointerMove, { passive: false });
+    dom.interaction.addEventListener('pointerup', onPointerUp);
+    dom.interaction.addEventListener('pointercancel', onPointerCancel);
+    dom.interaction.addEventListener('pointerleave', onPointerLeave);
+    dom.interaction.addEventListener('pointerenter', onPointerEnter);
+    window.addEventListener('wheel', onWheel, { passive: false });
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('resize', onResize);
+    window.addEventListener('orientationchange', onResize);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('beforeunload', () => {
+      state.stopped = true;
+      stopLoop();
+      if (state.audioEnabled) Sound.suspend();
+    });
+
+    dom.pingBtn.addEventListener('click', () => {
+      hideCue();
+      fireSonar();
+    });
+    dom.quietBtn.addEventListener('click', () => {
+      hideCue();
+      toggleSilent();
+    });
+    dom.audioBtn.addEventListener('click', () => {
+      hideCue();
+      toggleAudio();
+    });
+    dom.ascendBtn.addEventListener('click', () => {
+      hideCue();
+      adjustDepth(-50);
+    });
+    dom.descendBtn.addEventListener('click', () => {
+      hideCue();
+      adjustDepth(50);
+    });
+
+    if (reduceMedia) {
+      if (reduceMedia.addEventListener) reduceMedia.addEventListener('change', onReducedMotionChange);
+      else if (reduceMedia.addListener) reduceMedia.addListener(onReducedMotionChange);
+    }
+  }
+
+  function finishBoot() {
+    if (!dom.boot || dom.boot.classList.contains('is-done')) return;
+    dom.boot.classList.add('is-done');
+    state.ready = true;
+    window.setTimeout(() => {
+      if (dom.boot && dom.boot.parentNode) dom.boot.parentNode.removeChild(dom.boot);
+    }, state.reduced ? 120 : 420);
+  }
+
+  function init() {
+    state.reduced = Boolean(reduceMedia && reduceMedia.matches);
+    bindEvents();
+    resizeScene();
+    Sound.setZone(state.zone.id);
+    makeParticles();
+    generateInitialSignals();
+    updateHud();
+    drawRadar(0);
+    renderScene(0);
+    scheduleOpening();
+    startLoop();
+    window.setTimeout(finishBoot, state.reduced ? 220 : 980);
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>

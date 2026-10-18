@@ -89,6 +89,41 @@
     HUD：telemetry panel tape 下方新增独立 PWR 行（面板空间足够，未与
     信号条共用一行——选择理由：两行各自有语义，共用会牺牲信号条的
     六段刻度可读性）。音频链：master → batGain → batLP → destination。
+
+  v5 / P16+P18+P17 —— 感官可辨识（听得出深度/类型/操作，看得出 zone）
+  P16 音效系统：
+    master 下拆 ambientBus(0.15) / fxBus(0.45)，SFX 全部走 fxBus；静默两路同比例压
+    （0.045/0.15）；HADAL fxBus ×0.85（sonar 内部 ×1/0.85 补偿，sonar 例外不受压）；
+    电量 <20% fxBus ×0.7（全局 batLP 600Hz 已有）。sonar 按 zone 四档参数
+    （起始/终止/时长/feedback），发射音居中；回波经 StereoPannerNode 按
+    (sig.sx-probeX)/(W/2) 定位，同帧多命中只发最近一个。blip 按类型上行音程
+    （organism 五度 / vent 三度 / wreck 二度 / ruin 大七度 / echo 760+810 同响）。
+    两枚 drone 各挂 0.035/0.055Hz 增益 LFO（±25%，起始相位错开 0.4 周期）；
+    depth>800 叠 25Hz 底噪呼吸（±15%，updateDepth 跨 800 触发）。留白：sonar/
+    blip/thump 同名 3s 窗口 ×0.7/×0.4/静音，停 2s 重置（confirm 豁免）。静默中
+    20–40s 一次单点声响（噪声 200Hz 或 45Hz 正弦），不写日志。所有一次性节点
+    onended 后 disconnect，sonar delay+feedback 2s 后断开。音量三档（×0.7/1/1.3，
+    volGain 节点，不超硬性上限）在覆盖层「设置」标签页，'abyssal.volume.v1'。
+  P18 工具音效身份（fxToolBus 0.6 → toolLP，同名 200ms 去重，静默只留深度类，
+    电量 <20% toolLP 500Hz，stop 后 disconnect）：
+    深度 tick 上浮 480→500 / 下潜 380→360（0.04s gain 0.018，50m 一声，
+    reduced-motion 100m 一声），0/1400m 极限双音 520+390（0.06s gain 0.022）；
+    静默开=噪声 300Hz 0.12s+60Hz 脉冲 0.08s / 关=反序、lowpass 400Hz；
+    音频开=440/660 两短音间隔 0.08s / 关=反序 / 失败=220Hz 0.15s；
+    记录成功=blip 后 0.15s 叠 180Hz 正弦 0.08s gain 0.015（落定音）；
+    解码成功=520→660→780 三上行（各 0.06s 隔 0.06s，末音 0.2s gain 0.02）；
+    覆盖层开=噪声 200→600Hz 扫频 0.15s / 关=反扫 / 标签切换=300Hz 0.03s gain 0.01。
+    ⚠️ 说明：应用内不存在「解码失败」路径，decodeFail 音形已定义但未接线。
+  P17 深度背景差异化（全部画在现有 drawMid / drawFarExtras 内，无新 canvas 层，
+    新增元素合计 ≤40 个 1px 点，不占粒子预算）：
+    PHOTIC 鱼群 5→2（每条 3–7 个 1px 点水平漂移，受光变亮并逃离 1s，海藻保留）；
+    TWILIGHT 水母 3→5（上下浮动，触须 2–3px，受光收缩，鲸落骨架保留）；
+    ABYSSAL 管虫 6→3（喷口旁、顶端微光、受光增强）+ ember 色热液羽流 1px 点
+    抖动上浮（高度 ×(1-frac×0.3)，喷口/拱门保留）；
+    HADAL 移除海藻/鱼群/水母/管虫与喷口（按「只留岩壁和沉积物」），frac>0.7
+    偶现 2–3 条垂直 1px 线结构剪影（占画面 <5%）。
+    密度只改 count/尺寸参数不重建对象；全部受 lightExposureAt 影响换色；
+    光锥扫过有反应且不写日志；reduced-motion 跳过逃离/收缩动态，保留受光变色。
 -->
 <html lang="zh-CN">
 <head>
@@ -1641,11 +1676,13 @@ body.tut-active .hud .intro-cue{opacity:.35;}
         <div class="codex-tabs" role="tablist" aria-label="档案标签页">
           <button class="codex-tab is-on" id="codexTabLog" type="button" role="tab" aria-selected="true">图鉴</button>
           <button class="codex-tab" id="codexTabDossier" type="button" role="tab" aria-selected="false">DS-06 档案</button>
+          <button class="codex-tab" id="codexTabSettings" type="button" role="tab" aria-selected="false">设置</button>
         </div>
         <button class="codex-close" id="codexClose" type="button">关闭 ESC</button>
       </header>
       <div class="codex-body" id="codexPaneLog" role="tabpanel" aria-label="图鉴"></div>
       <div class="codex-body" id="codexPaneDossier" role="tabpanel" aria-label="DS-06 档案" hidden></div>
+      <div class="codex-body" id="codexPaneSettings" role="tabpanel" aria-label="设置" hidden></div>
     </div>
   </div>
 
@@ -1931,9 +1968,11 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     codexPanel: document.querySelector('.codex-panel'),
     codexTabLog: $('#codexTabLog'),
     codexTabDossier: $('#codexTabDossier'),
+    codexTabSettings: $('#codexTabSettings'),
     codexClose: $('#codexClose'),
     codexPaneLog: $('#codexPaneLog'),
     codexPaneDossier: $('#codexPaneDossier'),
+    codexPaneSettings: $('#codexPaneSettings'),
     codexBtn: $('#codexBtn'),
     live: $('#live'),
     tapeSegments: Array.from(document.querySelectorAll('.tape i')),
@@ -1982,6 +2021,10 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     narrative: { unlocked: [], anomalyCount: 0, final: false },
     narrativeQueue: [], narrativeFinaleScheduled: false,
     depthVelocity: 0, prevDepth: START_DEPTH, bgScroll: 0,
+    depthTickMark: Math.floor(START_DEPTH / 50),
+    nextWhisper: 24, deepBreathOn: false,
+    volume: 'mid',
+    seaLife: null,
     battery: 100, batteryBand: 'ok',
     particleBand: Math.floor(START_DEPTH / 100),
     tutorial: {
@@ -2013,6 +2056,10 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     ctx: null,
     master: null,
     ambient: null,
+    fx: null,
+    fxToolBus: null,
+    toolLP: null,
+    volGain: null,
     enabled: false,
     zone: 'ABYSSAL',
     quiet: false,
@@ -2021,6 +2068,24 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     drones: [],
     bioGain: null,
     hum: null,
+    deepBreath: null,
+    batteryBand: 'ok',
+    gates: {},
+    lastGateTime: -99,
+    toolLast: {},
+
+    // P16: SFX land on their own bus so the ambience keeps its headroom.
+    fxBusBase() {
+      let level = 0.45;
+      if (this.quiet) level *= 1 / 3;               // 0.15, same ratio as ambient
+      if (this.zone === 'HADAL') level *= 0.85;     // sonar compensates internally
+      if (this.batteryBand === 'low' || this.batteryBand === 'crit') level *= 0.7;
+      return level;
+    },
+    updateFxGain() {
+      if (!this.ctx || !this.fx) return;
+      this.fx.gain.setTargetAtTime(this.fxBusBase(), this.ctx.currentTime, 0.2);
+    },
 
     build() {
       const AudioCtor = window.AudioContext || window.webkitAudioContext;
@@ -2031,6 +2096,9 @@ body.tut-active .hud .intro-cue{opacity:.35;}
 
         const master = audio.createGain();
         master.gain.value = 0.0001;
+        // P16: three-stage output chain — volume → battery → destination.
+        const volGain = audio.createGain();
+        volGain.gain.value = { low: 0.7, mid: 1, high: 1.3 }[state.volume] || 1;
         // 电量氛围: everything the probe emits passes through this pair, so a
         // dying battery can dim and muffle output without touching gameplay.
         const batGain = audio.createGain();
@@ -2039,10 +2107,12 @@ body.tut-active .hud .intro-cue{opacity:.35;}
         batLP.type = 'lowpass';
         batLP.frequency.value = 18000;
         batLP.Q.value = 0.4;
-        master.connect(batGain);
+        master.connect(volGain);
+        volGain.connect(batGain);
         batGain.connect(batLP);
         batLP.connect(audio.destination);
         this.master = master;
+        this.volGain = volGain;
         this.batGain = batGain;
         this.batLP = batLP;
 
@@ -2050,6 +2120,23 @@ body.tut-active .hud .intro-cue{opacity:.35;}
         ambient.gain.value = 0.15;
         ambient.connect(master);
         this.ambient = ambient;
+
+        // P16: one-shot effects share their own bus (~1:3 against ambience).
+        const fx = audio.createGain();
+        fx.gain.value = this.fxBusBase();
+        fx.connect(master);
+        this.fx = fx;
+
+        // P18: tool feedback gets its own quiet lane and a dampable filter.
+        const fxToolBus = audio.createGain();
+        fxToolBus.gain.value = 0.6;
+        const toolLP = audio.createBiquadFilter();
+        toolLP.type = 'lowpass';
+        toolLP.frequency.value = 18000;
+        fxToolBus.connect(toolLP);
+        toolLP.connect(master);
+        this.fxToolBus = fxToolBus;
+        this.toolLP = toolLP;
 
         const buffer = audio.createBuffer(1, Math.max(1, Math.floor(audio.sampleRate * 2.4)), audio.sampleRate);
         const data = buffer.getChannelData(0);
@@ -2088,6 +2175,40 @@ body.tut-active .hud .intro-cue{opacity:.35;}
           osc.start();
           this.drones.push({ osc, gain });
         });
+
+        // P16: the drone bed breathes. Two slow LFOs, ±25% of each drone's
+        // gain, phase-staggered by delaying the second one 0.4 of its cycle —
+        // inaudible at build time because master is still at 0.0001.
+        this.drones.forEach((drone, index) => {
+          const lfo = audio.createOscillator();
+          lfo.type = 'sine';
+          lfo.frequency.value = index ? 0.055 : 0.035;
+          const depth = audio.createGain();
+          depth.gain.value = drone.gain.gain.value * 0.25;
+          lfo.connect(depth);
+          depth.connect(drone.gain.gain);
+          const when = audio.currentTime + index * 0.4 / lfo.frequency;
+          lfo.start(when);
+        });
+
+        // P16: below 800 m a 25 Hz bed "breathes" at ±15% — felt more than heard.
+        const breath = audio.createOscillator();
+        breath.type = 'sine';
+        breath.frequency.value = 25;
+        const breathGain = audio.createGain();
+        breathGain.gain.value = 0;
+        const breathLfo = audio.createOscillator();
+        breathLfo.type = 'sine';
+        breathLfo.frequency.value = 0.045;
+        const breathLfoGain = audio.createGain();
+        breathLfoGain.gain.value = 0.012 * 0.15;
+        breathLfo.connect(breathLfoGain);
+        breathLfoGain.connect(breathGain.gain);
+        breath.connect(breathGain);
+        breathGain.connect(master);
+        breath.start();
+        breathLfo.start();
+        this.deepBreath = { osc: breath, gain: breathGain };
 
         // Mains-hum bed: the two drones sit at 30–55Hz, which laptop and phone
         // speakers physically cannot reproduce — so with audio ON the room
@@ -2139,6 +2260,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
         this.applyTone(true);
         this.ambient.gain.value = this.quiet ? 0.045 : 0.15;
         this.bioGain.gain.value = this.quiet ? 0.045 : 0;
+        this.updateFxGain();
         this.enabled = false;
         return true;
       } catch (error) {
@@ -2183,7 +2305,8 @@ body.tut-active .hud .intro-cue{opacity:.35;}
 
     // 电量氛围: 'ok' / 'low' (<20%) / 'crit' (<5%). Visual-only if audio is off.
     setBattery(band) {
-      if (!this.ctx || !this.batGain || !this.batLP) return;
+      this.batteryBand = band;
+      if (!this.ctx) return;
       const now = this.ctx.currentTime;
       if (band === 'crit') {
         this.batGain.gain.setTargetAtTime(0.5, now, 0.4);
@@ -2195,6 +2318,11 @@ body.tut-active .hud .intro-cue{opacity:.35;}
         this.batGain.gain.setTargetAtTime(1, now, 0.4);
         this.batLP.frequency.setTargetAtTime(18000, now, 0.4);
       }
+      // P18: the tool lane gets its own dampening (500 Hz below 20%).
+      if (this.toolLP) {
+        this.toolLP.frequency.setTargetAtTime(band === 'ok' ? 18000 : 500, now, 0.4);
+      }
+      this.updateFxGain();
     },
 
     applyTone(immediate = false) {
@@ -2217,92 +2345,282 @@ body.tut-active .hud .intro-cue{opacity:.35;}
 
     // Short two-step confirmation so a click on AUDIO is audible proof that
     // the context really started, not just a label flipping to ON.
-    chime() {
-      if (!this.enabled || !this.ctx || !this.master) return;
+    setVolume(level) {
+      state.volume = level;
+      if (this.ctx && this.volGain) {
+        this.volGain.gain.setTargetAtTime(
+          { low: 0.7, mid: 1, high: 1.3 }[level] || 1, this.ctx.currentTime, 0.15
+        );
+      }
+    },
+
+    setDeepBreath(active) {
+      if (!this.ctx || !this.deepBreath) return;
+      this.deepBreath.gain.gain.setTargetAtTime(active ? 0.012 : 0, this.ctx.currentTime, 1.2);
+    },
+
+    // P16: same-name sounds inside a 3s window taper ×0.7 → ×0.4 → mute;
+    // two seconds without the tool resets the tally. confirm never gates.
+    gate(name) {
+      const now = this.ctx.currentTime;
+      if (now - this.lastGateTime > 2) this.gates = {};
+      this.lastGateTime = now;
+      const list = this.gates[name] = this.gates[name] || [];
+      while (list.length && now - list[0] > 3) list.shift();
+      const count = list.length;
+      list.push(now);
+      if (count === 0) return 1;
+      if (count === 1) return 0.7;
+      if (count === 2) return 0.4;
+      return 0;
+    },
+
+    // P16: one-shot nodes clean up after themselves — no graph leaks.
+    track(nodes) {
+      const source = nodes[0];
+      if (!source || !source.onended) return;
+      source.onended = () => {
+        for (const node of nodes) {
+          try { node.disconnect(); } catch (error) { /* already gone */ }
+        }
+      };
+    },
+
+    // P16: the returning ping is placed in stereo by the contact's bearing.
+    echo(pan) {
+      if (!this.enabled || !this.ctx || !this.fx) return;
       const audio = this.ctx;
-      const t = audio.currentTime + 0.02;
-      [659.25, 987.77].forEach((frequency, index) => {
+      const t = audio.currentTime + 0.01;
+      const osc = audio.createOscillator();
+      const gain = audio.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(900, t);
+      osc.frequency.exponentialRampToValueAtTime(720, t + 0.07);
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(0.014, t + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+      osc.connect(gain);
+      if (audio.createStereoPanner) {
+        const panner = audio.createStereoPanner();
+        panner.pan.value = clamp(pan, -1, 1);
+        gain.connect(panner);
+        panner.connect(this.fx);
+        this.track([osc, gain, panner]);
+      } else {
+        gain.connect(this.fx);
+        this.track([osc, gain]);
+      }
+      osc.start(t);
+      osc.stop(t + 0.1);
+    },
+
+    // P18: named tool feedback. One bus, 200ms de-dup, silence keeps only the
+    // depth family, a tired battery muffles the lane through toolLP.
+    tool(name) {
+      if (!this.enabled || !this.ctx || !this.fxToolBus) return;
+      const depthFamily = name === 'depthTickUp' || name === 'depthTickDown' || name === 'depthLimit';
+      if (this.quiet && !depthFamily) return;
+      const now = this.ctx.currentTime;
+      if (now - (this.toolLast[name] || -99) < 0.2) return;
+      this.toolLast[name] = now;
+      const audio = this.ctx;
+      const bus = this.fxToolBus;
+      const tone = (type, from, to, duration, peak, at = 0) => {
         const osc = audio.createOscillator();
         const gain = audio.createGain();
-        osc.type = 'triangle';
-        osc.frequency.value = frequency;
-        const at = t + index * 0.09;
-        gain.gain.setValueAtTime(0.0001, at);
-        gain.gain.exponentialRampToValueAtTime(index ? 0.015 : 0.022, at + 0.012);
-        gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.42);
+        const start = t0 + at;
+        osc.type = type;
+        osc.frequency.setValueAtTime(from, start);
+        if (to !== from) osc.frequency.linearRampToValueAtTime(to, start + duration);
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.linearRampToValueAtTime(peak, start + 0.008);
+        gain.gain.linearRampToValueAtTime(0.0001, start + duration);
         osc.connect(gain);
-        gain.connect(this.master);
-        osc.start(at);
-        osc.stop(at + 0.44);
-      });
+        gain.connect(bus);
+        osc.start(start);
+        osc.stop(start + duration + 0.02);
+        this.track([osc, gain]);
+      };
+      const noise = (cutoffFrom, cutoffTo, duration, peak, at = 0) => {
+        const length = Math.max(1, Math.floor(audio.sampleRate * (duration + 0.06)));
+        const buffer = audio.createBuffer(1, length, audio.sampleRate);
+        const channel = buffer.getChannelData(0);
+        for (let i = 0; i < length; i++) channel[i] = Math.random() * 2 - 1;
+        const source = audio.createBufferSource();
+        source.buffer = buffer;
+        const filter = audio.createBiquadFilter();
+        filter.type = 'lowpass';
+        const start = t0 + at;
+        filter.frequency.setValueAtTime(cutoffFrom, start);
+        filter.frequency.linearRampToValueAtTime(cutoffTo, start + duration);
+        const gain = audio.createGain();
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.linearRampToValueAtTime(peak, start + 0.01);
+        gain.gain.linearRampToValueAtTime(0.0001, start + duration);
+        source.connect(filter);
+        filter.connect(gain);
+        gain.connect(bus);
+        source.start(start);
+        source.stop(start + duration + 0.02);
+        this.track([source, filter, gain]);
+      };
+      const t0 = audio.currentTime + 0.01;
+      if (name === 'depthTickUp') tone('sine', 480, 500, 0.04, 0.018);
+      else if (name === 'depthTickDown') tone('sine', 380, 360, 0.04, 0.018);
+      else if (name === 'depthLimit') {
+        tone('sine', 520, 520, 0.06, 0.022);
+        tone('sine', 390, 390, 0.06, 0.022);
+      } else if (name === 'silentOn') {
+        noise(300, 300, 0.12, 0.02);
+        tone('sine', 60, 60, 0.08, 0.02, 0.02);
+      } else if (name === 'silentOff') {
+        tone('sine', 60, 60, 0.08, 0.02);
+        noise(400, 400, 0.12, 0.02, 0.08);
+      } else if (name === 'audioOn') {
+        tone('triangle', 440, 440, 0.06, 0.02);
+        tone('triangle', 660, 660, 0.06, 0.02, 0.08);
+      } else if (name === 'audioOff') {
+        tone('triangle', 660, 660, 0.06, 0.02);
+        tone('triangle', 440, 440, 0.06, 0.02, 0.08);
+      } else if (name === 'audioFail') tone('sine', 220, 220, 0.15, 0.02);
+      else if (name === 'recordSettle') tone('sine', 180, 180, 0.08, 0.015, 0.15);
+      else if (name === 'decodeOk') {
+        tone('triangle', 520, 520, 0.06, 0.02);
+        tone('triangle', 660, 660, 0.06, 0.02, 0.12);
+        tone('triangle', 780, 780, 0.2, 0.02, 0.24);
+      } else if (name === 'decodeFail') tone('sine', 400, 360, 0.1, 0.018);
+      else if (name === 'overlayOpen') noise(200, 600, 0.15, 0.012);
+      else if (name === 'overlayClose') noise(600, 200, 0.15, 0.012);
+      else if (name === 'tab') tone('sine', 300, 300, 0.03, 0.01);
     },
 
-    setZone(zoneId) {
-      if (!ZONE_AUDIO[zoneId]) return;
-      this.zone = zoneId;
-      this.applyTone();
-    },
-
-    setQuiet(quiet) {
-      this.quiet = Boolean(quiet);
-      if (!this.ctx || !this.ambient) return;
-      const now = this.ctx.currentTime;
-      this.ambient.gain.setTargetAtTime(quiet ? 0.045 : 0.15, now, 0.12);
-      if (this.bioGain) {
-        this.bioGain.gain.setTargetAtTime(quiet ? 0.045 : 0, now, quiet ? 1.8 : 0.8);
+    // P16: a lone click or drip somewhere out there while running silent.
+    whisper() {
+      if (!this.enabled || !this.ctx || !this.fx) return;
+      const audio = this.ctx;
+      const t0 = audio.currentTime + 0.02;
+      if (Math.random() < 0.5) {
+        const length = Math.floor(audio.sampleRate * 0.13);
+        const buffer = audio.createBuffer(1, length, audio.sampleRate);
+        const channel = buffer.getChannelData(0);
+        for (let i = 0; i < length; i++) channel[i] = Math.random() * 2 - 1;
+        const source = audio.createBufferSource();
+        source.buffer = buffer;
+        const filter = audio.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.value = 200;
+        const gain = audio.createGain();
+        gain.gain.setValueAtTime(0.0001, t0);
+        gain.gain.linearRampToValueAtTime(0.03, t0 + 0.01);
+        gain.gain.linearRampToValueAtTime(0.0001, t0 + 0.08);
+        source.connect(filter);
+        filter.connect(gain);
+        gain.connect(this.fx);
+        source.start(t0);
+        source.stop(t0 + 0.1);
+        this.track([source, filter, gain]);
+      } else {
+        const osc = audio.createOscillator();
+        const gain = audio.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = 45;
+        gain.gain.setValueAtTime(0.0001, t0);
+        gain.gain.linearRampToValueAtTime(0.025, t0 + 0.012);
+        gain.gain.linearRampToValueAtTime(0.0001, t0 + 0.06);
+        osc.connect(gain);
+        gain.connect(this.fx);
+        osc.start(t0);
+        osc.stop(t0 + 0.07);
+        this.track([osc, gain]);
       }
-      this.applyTone();
     },
 
     sonar() {
-      if (!this.enabled || !this.ctx || !this.master) return;
+      if (!this.enabled || !this.ctx || !this.fx) return;
+      const gateLevel = this.gate('sonar');
+      if (gateLevel <= 0) return;
       const audio = this.ctx;
+      const profile = {
+        PHOTIC: { start: 920, end: 220, dur: 1.1, feedback: 0.2 },
+        TWILIGHT: { start: 860, end: 190, dur: 1.2, feedback: 0.24 },
+        ABYSSAL: { start: 800, end: 160, dur: 1.3, feedback: 0.28 },
+        HADAL: { start: 720, end: 130, dur: 1.5, feedback: 0.32 }
+      }[this.zone] || { start: 800, end: 160, dur: 1.3, feedback: 0.28 };
       const t = audio.currentTime;
+      // HADAL pulls the fx bus down; the sweep is the stated exception, so it
+      // lifts itself back to a level ear.
+      const hadalLift = this.zone === 'HADAL' ? 1 / 0.85 : 1;
+      const peak = 0.055 * gateLevel * hadalLift;
       const osc = audio.createOscillator();
       const gain = audio.createGain();
       const delay = audio.createDelay(1);
       const feedback = audio.createGain();
       const wet = audio.createGain();
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(840, t);
-      osc.frequency.exponentialRampToValueAtTime(180, t + 1.25);
+      osc.frequency.setValueAtTime(profile.start, t);
+      osc.frequency.exponentialRampToValueAtTime(profile.end, t + profile.dur);
       gain.gain.setValueAtTime(0.0001, t);
-      gain.gain.exponentialRampToValueAtTime(0.055, t + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, t + 1.35);
+      gain.gain.exponentialRampToValueAtTime(peak, t + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + profile.dur + 0.1);
       delay.delayTime.value = 0.34;
-      feedback.gain.value = 0.24;
+      feedback.gain.value = profile.feedback;
       wet.gain.value = 0.42;
       osc.connect(gain);
-      gain.connect(this.master);
+      gain.connect(this.fx);
       gain.connect(delay);
       delay.connect(wet);
+      wet.connect(this.fx);
       delay.connect(feedback);
       feedback.connect(delay);
-      wet.connect(this.master);
       osc.start(t);
-      osc.stop(t + 1.4);
+      osc.stop(t + profile.dur + 0.15);
+      this.track([osc, gain]);
+      // The tail is allowed to ring out, then the delay chain is dropped from
+      // the graph entirely — nothing keeps living in there.
+      window.setTimeout(() => {
+        for (const node of [delay, wet, feedback]) {
+          try { node.disconnect(); } catch (error) { /* already gone */ }
+        }
+      }, 2000);
     },
 
-    blip() {
-      if (!this.enabled || !this.ctx || !this.master) return;
+    blip(sig) {
+      if (!this.enabled || !this.ctx || !this.fx) return;
+      const gateLevel = this.gate('blip');
+      if (gateLevel <= 0) return;
       const audio = this.ctx;
       const t = audio.currentTime;
-      const osc = audio.createOscillator();
-      const gain = audio.createGain();
-      osc.type = 'triangle';
-      osc.frequency.setValueAtTime(760, t);
-      osc.frequency.exponentialRampToValueAtTime(1120, t + 0.08);
-      gain.gain.setValueAtTime(0.0001, t);
-      gain.gain.exponentialRampToValueAtTime(0.024, t + 0.01);
-      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
-      osc.connect(gain);
-      gain.connect(this.master);
-      osc.start(t);
-      osc.stop(t + 0.14);
+      const kind = sig && sig.type ? sig.type.kind : 'organism';
+      const make = (from, to, duration, peak) => {
+        const osc = audio.createOscillator();
+        const gain = audio.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(from, t);
+        osc.frequency.exponentialRampToValueAtTime(to, t + duration);
+        gain.gain.setValueAtTime(0.0001, t);
+        gain.gain.exponentialRampToValueAtTime(peak, t + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + duration + 0.04);
+        osc.connect(gain);
+        gain.connect(this.fx);
+        osc.start(t);
+        osc.stop(t + duration + 0.05);
+        this.track([osc, gain]);
+      };
+      // P16: the interval names the contact type — fifth, third, second,
+      // major seventh, or a dissonant pair for the ones that should not be.
+      if (kind === 'echo') {
+        make(760, 760, 0.08, 0.02 * gateLevel);
+        make(810, 810, 0.08, 0.02 * gateLevel);
+        return;
+      }
+      const intervals = { organism: 1140, vent: 950, wreck: 860, ruin: 1350 };
+      make(760, intervals[kind] || 1140, 0.08, 0.024 * gateLevel);
     },
 
     thump() {
-      if (!this.enabled || !this.ctx || !this.master) return;
+      if (!this.enabled || !this.ctx || !this.fx) return;
+      const gateLevel = this.gate('thump');
+      if (gateLevel <= 0) return;
       const audio = this.ctx;
       const t = audio.currentTime;
       const osc = audio.createOscillator();
@@ -2311,16 +2629,17 @@ body.tut-active .hud .intro-cue{opacity:.35;}
       osc.frequency.setValueAtTime(62, t);
       osc.frequency.exponentialRampToValueAtTime(38, t + 0.55);
       gain.gain.setValueAtTime(0.0001, t);
-      gain.gain.exponentialRampToValueAtTime(0.05, t + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.05 * gateLevel, t + 0.03);
       gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.72);
       osc.connect(gain);
-      gain.connect(this.master);
+      gain.connect(this.fx);
       osc.start(t);
       osc.stop(t + 0.75);
+      this.track([osc, gain]);
     },
 
     confirm() {
-      if (!this.enabled || !this.ctx || !this.master) return;
+      if (!this.enabled || !this.ctx || !this.fx) return;
       this.thump();
       const audio = this.ctx;
       const t = audio.currentTime + 0.04;
@@ -2332,9 +2651,29 @@ body.tut-active .hud .intro-cue{opacity:.35;}
       gain.gain.exponentialRampToValueAtTime(0.026, t + 0.14);
       gain.gain.exponentialRampToValueAtTime(0.0001, t + 1.5);
       osc.connect(gain);
-      gain.connect(this.master);
+      gain.connect(this.fx);
       osc.start(t);
       osc.stop(t + 1.55);
+      this.track([osc, gain]);
+    },
+
+    setZone(zoneId) {
+      if (!ZONE_AUDIO[zoneId]) return;
+      this.zone = zoneId;
+      this.applyTone();
+      this.updateFxGain();
+    },
+
+    setQuiet(quiet) {
+      this.quiet = Boolean(quiet);
+      if (!this.ctx || !this.ambient) return;
+      const now = this.ctx.currentTime;
+      this.ambient.gain.setTargetAtTime(quiet ? 0.045 : 0.15, now, 0.12);
+      if (this.bioGain) {
+        this.bioGain.gain.setTargetAtTime(quiet ? 0.045 : 0, now, quiet ? 1.8 : 0.8);
+      }
+      this.applyTone();
+      this.updateFxGain();
     },
 
     suspend() {
@@ -2639,7 +2978,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     }
   }
 
-  function drawRibs(now) {
+  function drawRibs(now, clarity = 1) {
     const W = state.W;
     const H = state.H;
     const spineY = Math.round(H * 0.64);
@@ -2651,7 +2990,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
       const x = x0 + Math.round((rib + 1) * (x1 - x0) / 6);
       for (let j = 0; j < 8; j++) {
         const dx = Math.round(Math.sin(j * 0.72) * (3 + rib * 0.4));
-        if (bayer(x + dx, spineY + j) < 0.68) {
+        if (bayer(x + dx, spineY + j) < 0.68 * clarity) {
           ctx.fillStyle = bayer(x + dx, spineY + j) < 0.14 ? C.current : C.shelf;
           ctx.fillRect(x + dx, spineY + j * 2, 1, 1);
           ctx.fillRect(x - dx, spineY + j * 2, 1, 1);
@@ -2671,7 +3010,9 @@ body.tut-active .hud .intro-cue{opacity:.35;}
       drawArch(W * 0.19, H * 0.68, Math.max(22, W * 0.085), Math.max(16, W * 0.105), C.void, C.current);
       drawArch(W * 0.79, H * 0.64, Math.max(15, W * 0.052), Math.max(11, W * 0.065), C.void, C.shelf);
     } else if (state.zone.extras === 'ribs') {
-      drawRibs(now);
+      // P17: the whale fall fades out as TWILIGHT deepens (clarity ×(1-frac×0.4)).
+      const frac = clamp((state.depth - state.zone.min) / Math.max(1, state.zone.max - state.zone.min), 0, 1);
+      drawRibs(now, 1 - frac * 0.4);
     } else if (state.zone.extras === 'trench') {
       ctx.fillStyle = C.void;
       for (let side = 0; side < 2; side++) {
@@ -2901,13 +3242,13 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     }
   }
 
-  function drawKelp(now, side) {
+  function drawKelp(now, side, scale = 1) {
     const W = state.W;
     const H = state.H;
     const baseY = H * 0.91;
     const origin = side === 0 ? W * 0.055 : W * 0.945;
     for (let stalk = 0; stalk < 4; stalk++) {
-      const height = H * (0.16 + hash(stalk + side * 9) * 0.12);
+      const height = H * (0.16 + hash(stalk + side * 9) * 0.12) * scale;
       const baseX = origin + (stalk - 1.5) * 3 + Math.sin(now * 0.23 + stalk) * 1.5;
       for (let i = 0; i < height; i += 2) {
         const t = i / height;
@@ -2983,20 +3324,206 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     }
   }
 
+  /* ---------------------------------------------------------------------
+     P17: per-zone life. Built once per zone entry, then only re-counted as
+     depthFrac drifts. Hard budget: ≤40 single-pixel units, all light-aware.
+  --------------------------------------------------------------------- */
+  function resetSeaLife(zone) {
+    state.seaLife = {
+      zoneId: zone.id,
+      fish: [],
+      jelly: [],
+      worms: [],
+      structureSeed: hash(zone.seed * 1.7) * 100
+    };
+  }
+
+  function seaLifeTargets(zone) {
+    const frac = clamp((state.depth - zone.min) / Math.max(1, zone.max - zone.min), 0, 1);
+    if (zone.id === 'PHOTIC') return { fish: Math.round(5 - frac * 3), frac };
+    if (zone.id === 'TWILIGHT') return { jelly: Math.round(3 + frac * 2), frac };
+    if (zone.id === 'ABYSSAL') return { worms: Math.round(6 - frac * 3), frac };
+    return { structure: frac > 0.7, frac };
+  }
+
+  function settleSeaLife(targets) {
+    const life = state.seaLife;
+    const fishTarget = targets.fish || 0;
+    while (life.fish.length > fishTarget) life.fish.pop();
+    while (life.fish.length < fishTarget) {
+      life.fish.push({
+        x: 0.12 + Math.random() * 0.76,
+        y: 0.3 + Math.random() * 0.34,
+        vx: (0.006 + Math.random() * 0.014) * (Math.random() < 0.5 ? 1 : -1),
+        size: 3 + Math.floor(Math.random() * 5),
+        phase: Math.random() * TAU,
+        fleeUntil: -1,
+        fleeDir: 1
+      });
+    }
+    const jellyTarget = targets.jelly || 0;
+    while (life.jelly.length > jellyTarget) life.jelly.pop();
+    while (life.jelly.length < jellyTarget) {
+      life.jelly.push({
+        x: 0.14 + Math.random() * 0.72,
+        y: 0.34 + Math.random() * 0.38,
+        bob: 0.3 + Math.random() * 0.4,
+        phase: Math.random() * TAU,
+        tentacle: 2 + Math.floor(Math.random() * 2)
+      });
+    }
+    // Tube worms cluster by the two known vent stacks.
+    const wormTarget = targets.worms || 0;
+    while (life.worms.length > wormTarget) life.worms.pop();
+    while (life.worms.length < wormTarget) {
+      const stack = life.worms.length % 2 === 0 ? 0.8 : 0.64;
+      life.worms.push({
+        x: stack + (Math.random() - 0.5) * 0.06,
+        y: 0.84 + Math.random() * 0.09,
+        h: 2 + Math.floor(Math.random() * 2),
+        phase: Math.random() * TAU
+      });
+    }
+  }
+
+  function drawSeaLife(now) {
+    if (!state.arms || !state.zone) return;
+    if (!state.seaLife || state.seaLife.zoneId !== state.zone.id) resetSeaLife(state.zone);
+    const life = state.seaLife;
+    const targets = seaLifeTargets(state.zone);
+    const W = state.W;
+    const H = state.H;
+
+    if (targets.fish) {
+      settleSeaLife(targets);
+      for (const fish of life.fish) {
+        const last = fish.lastNow === undefined ? now : fish.lastNow;
+        const dt = clamp(now - last, 0, 0.2);
+        fish.lastNow = now;
+        const px = Math.round(fish.x * W);
+        const py = Math.round(fish.y * H);
+        const exposure = lightExposureAt(px, py);
+        if (!state.reduced && exposure > 0.3 && now > fish.fleeUntil) {
+          fish.fleeUntil = now + 1;
+          fish.fleeDir = fish.x * W < state.probeX ? -1 : 1;
+        }
+        const fleeing = !state.reduced && now < fish.fleeUntil;
+        const dir = fleeing ? fish.fleeDir : (fish.vx >= 0 ? 1 : -1);
+        fish.x += Math.abs(fish.vx) * (fleeing ? 2.4 : 1) * dir * dt;
+        if (fish.x < -0.03) fish.x = 1.02;
+        else if (fish.x > 1.02) fish.x = -0.02;
+        const bright = exposure > 0.15;
+        const main = bright ? C.haze : C.shelf;
+        const dim = bright ? C.glow : C.deep;
+        const fx = Math.round(fish.x * W);
+        const fy = Math.round(fish.y * H + Math.sin(now * 2.2 + fish.phase) * 1.5);
+        for (let i = 0; i < fish.size; i++) {
+          const x = fx + i;
+          if (x < 0 || x >= W || fy < 0 || fy >= H) continue;
+          ctx.fillStyle = i === 0 ? main : dim;
+          ctx.fillRect(x, fy + (i % 2), 1, 1);
+        }
+      }
+    }
+
+    if (targets.jelly) {
+      settleSeaLife(targets);
+      for (const jelly of life.jelly) {
+        const px = Math.round(jelly.x * W);
+        const py = Math.round((jelly.y + Math.sin(now * jelly.bob + jelly.phase) * 0.022) * H);
+        const exposure = lightExposureAt(px, py);
+        const lit = exposure > 0.25;
+        const shrink = lit && !state.reduced;
+        const bell = shrink ? 1 : 2;
+        ctx.fillStyle = exposure > 0.15 ? C.haze : C.shelf;
+        for (let i = -bell; i <= bell; i++) {
+          const x = px + i;
+          if (x < 0 || x >= W || py < 0 || py >= H) continue;
+          ctx.fillRect(x, py, 1, 1);
+        }
+        const tentacles = shrink ? 1 : jelly.tentacle;
+        ctx.fillStyle = exposure > 0.15 ? C.current : C.deep;
+        for (let t = 1; t <= tentacles; t++) {
+          const sway = Math.round(Math.sin(now * 0.9 + jelly.phase + t) * 1);
+          const x = px + (t % 2 === 0 ? 1 : -1) + sway;
+          const y = py + 1 + t;
+          if (x < 0 || x >= W || y < 0 || y >= H) continue;
+          ctx.fillRect(x, y, 1, 1);
+        }
+      }
+    }
+
+    if (targets.worms) {
+      settleSeaLife(targets);
+      const plumeScale = 1 - targets.frac * 0.3;
+      for (const worm of life.worms) {
+        const px = Math.round(worm.x * W);
+        const base = Math.round(worm.y * H);
+        const exposure = lightExposureAt(px, base - worm.h);
+        ctx.fillStyle = exposure > 0.2 ? C.haze : C.current;
+        for (let i = 0; i < worm.h; i++) {
+          if (base - i < 0 || px < 0 || px >= W) continue;
+          ctx.fillRect(px, base - i, 1, 1);
+        }
+        // The tip carries a faint glow that brightens under the lamp.
+        if (base - worm.h >= 0) {
+          ctx.fillStyle = exposure > 0.12 ? (exposure > 0.4 ? C.foam : C.glow) : C.shelf;
+          ctx.fillRect(px, base - worm.h, 1, 1);
+        }
+      }
+      // Ember plumes: a few jittering pixels climbing off each vent.
+      for (const stackX of [0.8, 0.64]) {
+        for (let i = 0; i < 3; i++) {
+          const rise = ((now * 9 + i * 5.3 + stackX * 17) % (14 * plumeScale + 4));
+          const px = Math.round(stackX * W + Math.sin(now * 1.4 + i * 2.1 + stackX * 9) * (1 + rise * 0.18));
+          const py = Math.round(0.9 * H - rise);
+          if (px < 0 || px >= W || py < 0 || py >= H) continue;
+          if (bayer(px + i * 3, py) > 0.66) continue;
+          ctx.fillStyle = C.ember;
+          ctx.fillRect(px, py, 1, 1);
+        }
+      }
+    }
+
+    if (targets.structure) {
+      // HADAL: once in a while the wall carries a shape nobody logged.
+      const slot = Math.floor(now / 30);
+      if (hash(life.structureSeed + slot * 3.1) > 0.55) {
+        const baseX = Math.round(W * (0.3 + hash(life.structureSeed + slot) * 0.4));
+        const baseY = Math.round(H * 0.62);
+        const lines = 2 + Math.floor(hash(life.structureSeed + slot * 1.9) * 2);
+        for (let line = 0; line < lines; line++) {
+          const x = baseX + line * 3;
+          const tall = 4 + Math.floor(hash(life.structureSeed + slot * 2.7 + line) * 4);
+          for (let i = 0; i < tall; i++) {
+            const y = baseY - i;
+            if (x < 0 || x >= W || y < 0 || y >= H) continue;
+            ctx.fillStyle = i === tall - 1 ? C.shelf : C.void;
+            ctx.fillRect(x, y, 1, 1);
+          }
+        }
+      }
+    }
+  }
+
   function drawMid(now) {
     drawFloor(now);
     drawRockMass(-0.03, 0.29, 0.19, 2.1, now);
     drawRockMass(0.73, 1.04, 0.16, 7.4, now);
     drawRockMass(0.43, 0.55, 0.045, 1.2, now);
 
+    // P17: kelp thins as PHOTIC deepens (height ×(1 - frac×0.3)).
     if (state.zone.extras === 'kelp') {
-      drawKelp(now, 0);
-      drawKelp(now, 1);
+      const frac = clamp((state.depth - state.zone.min) / Math.max(1, state.zone.max - state.zone.min), 0, 1);
+      const kelpScale = 1 - frac * 0.3;
+      drawKelp(now, 0, kelpScale);
+      drawKelp(now, 1, kelpScale);
     }
     if (state.zone.extras === 'ruin') {
       drawRuinMid(now);
     }
-    if (state.zone.id === 'ABYSSAL' || state.zone.id === 'HADAL') {
+    // P17: vents stay in ABYSSAL — HADAL keeps only rock and sediment.
+    if (state.zone.id === 'ABYSSAL') {
       drawVent(now, 0.80, 0.905, 0.13, 2.7);
       drawVent(now, 0.64, 0.925, 0.07, 5.1);
     }
@@ -3013,6 +3540,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
         }
       }
     }
+    drawSeaLife(now);
   }
 
   /* ---------------------------------------------------------------------
@@ -4053,6 +4581,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
   --------------------------------------------------------------------- */
   const CODEX_KEY = 'abyssal.codex.v1';
   const DS06_KEY = 'abyssal.ds06.v1';
+  const VOLUME_KEY = 'abyssal.volume.v1';
   const DS06_FINAL_TEXT = 'DS-06 记录：如果你读到这里，说明我停下的地方，你还在。';
   const DS06_RECORDS = [
     { id: 'type:ORG', group: 'type', text: 'DS-06 记录：该生物在光照下不逃逸。它只是看着。' },
@@ -4083,6 +4612,10 @@ body.tut-active .hud .intro-cue{opacity:.35;}
   }
 
   function loadPersistentState() {
+    const storedVolume = loadStore(VOLUME_KEY, null);
+    if (storedVolume === 'low' || storedVolume === 'mid' || storedVolume === 'high') {
+      state.volume = storedVolume;
+    }
     const codex = loadStore(CODEX_KEY, null);
     if (codex && typeof codex === 'object') {
       state.codex.types = (codex.types && typeof codex.types === 'object') ? codex.types : {};
@@ -4134,6 +4667,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     state.narrative.unlocked.push(id);
     saveStore(DS06_KEY, state.narrative);
     addLog('ARC', '◇ ' + record.text, 'quiet');
+    Sound.tool('decodeOk');
     if (state.codexOverlay.classList.contains('is-open')) renderCodexPanes();
     if (state.narrative.unlocked.length >= DS06_RECORDS.length && !state.narrative.final &&
         !state.narrativeFinaleScheduled) {
@@ -4219,6 +4753,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     if (state.codexOpen) return;
     state.codexOpen = true;
     renderCodexPanes();
+    Sound.tool('overlayOpen');
     dom.codexOverlay.hidden = false;
     // Double rAF so the transition sees the hidden→visible flip.
     window.requestAnimationFrame(() => dom.codexOverlay.classList.add('is-open'));
@@ -4229,6 +4764,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
   function closeCodex() {
     if (!state.codexOpen) return;
     state.codexOpen = false;
+    Sound.tool('overlayClose');
     dom.codexOverlay.classList.remove('is-open');
     dom.codexBtn.setAttribute('aria-expanded', 'false');
     window.setTimeout(() => {
@@ -4243,13 +4779,56 @@ body.tut-active .hud .intro-cue{opacity:.35;}
   }
 
   function setCodexTab(which) {
-    const logOn = which === 'log';
-    dom.codexTabLog.classList.toggle('is-on', logOn);
-    dom.codexTabDossier.classList.toggle('is-on', !logOn);
-    dom.codexTabLog.setAttribute('aria-selected', logOn ? 'true' : 'false');
-    dom.codexTabDossier.setAttribute('aria-selected', logOn ? 'false' : 'true');
-    dom.codexPaneLog.hidden = !logOn;
-    dom.codexPaneDossier.hidden = logOn;
+    Sound.tool('tab');
+    const tabs = [
+      ['log', dom.codexTabLog, dom.codexPaneLog],
+      ['dossier', dom.codexTabDossier, dom.codexPaneDossier],
+      ['settings', dom.codexTabSettings, dom.codexPaneSettings]
+    ];
+    for (const [name, button, pane] of tabs) {
+      const on = name === which;
+      button.classList.toggle('is-on', on);
+      button.setAttribute('aria-selected', on ? 'true' : 'false');
+      pane.hidden = !on;
+    }
+    if (which === 'settings') renderSettingsPane();
+  }
+
+  // P16: three volume steps, persisted. The factor sits on its own gain node
+  // so the master ramp and the battery mood stay untouched.
+  function renderSettingsPane() {
+    const pane = dom.codexPaneSettings;
+    if (!pane) return;
+    pane.textContent = '';
+    const title = document.createElement('div');
+    title.className = 'codex-group-title';
+    title.textContent = '输出音量';
+    pane.appendChild(title);
+    const options = [['low', '低 ×0.7'], ['mid', '中 ×1.0'], ['high', '高 ×1.3']];
+    for (const [level, label] of options) {
+      const row = document.createElement('div');
+      row.className = 'codex-row';
+      const key = document.createElement('span');
+      key.className = 'k';
+      key.textContent = label;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'codex-tab' + (state.volume === level ? ' is-on' : '');
+      button.textContent = state.volume === level ? '当前' : '使用';
+      button.addEventListener('click', () => {
+        Sound.setVolume(level);
+        saveStore(VOLUME_KEY, level);
+        Sound.tool('tab');
+        renderSettingsPane();
+      });
+      row.appendChild(key);
+      row.appendChild(button);
+      pane.appendChild(row);
+    }
+    const note = document.createElement('div');
+    note.className = 'codex-meta';
+    note.textContent = '音量上限恒定 · 不会超过设备安全电平';
+    pane.appendChild(note);
   }
 
   /* ---------------------------------------------------------------------
@@ -4409,7 +4988,8 @@ body.tut-active .hud .intro-cue{opacity:.35;}
       updateSignalAria(sig);
       if (sig.markEl) sig.markEl.textContent = '◆';
       sig.el.classList.add('is-archived');
-      Sound.blip();
+      Sound.blip(sig);
+      Sound.tool('recordSettle');
       addLog('ARC', '归档 ' + sig.type.cn + ' / ' + sig.code + '。');
       if (sig.silentFind) {
         addLog('SYS', '静默发现 · 该生物只在无源环境下出现。', 'quiet');
@@ -4661,14 +5241,24 @@ body.tut-active .hud .intro-cue{opacity:.35;}
       if (state.targetDepth <= 0.5 && !state.limits.top) {
         state.limits.top = true;
         addLog('DEP', '抵达浅层安全极限 / 0000 M。', 'quiet');
+        Sound.tool('depthLimit');
       } else if (state.targetDepth >= MAX_DEPTH - 0.5 && !state.limits.bottom) {
         state.limits.bottom = true;
         addLog('DEP', '抵达耐压壳体极限 / 1400 M。', 'dep');
+        Sound.tool('depthLimit');
       }
       return;
     }
     if (state.targetDepth > 0.5) state.limits.top = false;
     if (state.targetDepth < MAX_DEPTH - 0.5) state.limits.bottom = false;
+    // P18: one tick per 50 metres of commanded travel (100 under reduced
+    // motion), direction carried by the pitch.
+    const step = state.reduced ? 100 : 50;
+    const mark = Math.floor(state.targetDepth / step);
+    if (mark !== state.depthTickMark) {
+      state.depthTickMark = mark;
+      Sound.tool(delta > 0 ? 'depthTickDown' : 'depthTickUp');
+    }
     hideCue();
   }
 
@@ -4711,6 +5301,13 @@ body.tut-active .hud .intro-cue{opacity:.35;}
       }
     }
 
+    // P16: the 25 Hz bed only breathes below 800 m.
+    const breath = state.depth > 800;
+    if (breath !== state.deepBreathOn) {
+      state.deepBreathOn = breath;
+      Sound.setDeepBreath(breath);
+    }
+
     const nextZone = zoneAt(state.depth);
     if (nextZone.id !== state.zone.id) {
       state.zone = nextZone;
@@ -4725,6 +5322,8 @@ body.tut-active .hud .intro-cue{opacity:.35;}
         state.sectionArchived = 0;
         state.sectionDone = false;
         addLog('SYS', '进入 ' + nextZone.cn + '。新目标：' + state.sectionTarget + ' 个归档。', 'quiet');
+        // P17: each zone gets its own cast of background life.
+        resetSeaLife(nextZone);
       }
     }
   }
@@ -4806,6 +5405,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     state.sonar.radius = maxRadius * (1 - Math.pow(1 - progress, 2.2));
 
     if (state.arms && !state.silent) {
+      const sweepHits = [];
       for (const sig of state.signals) {
         if (state.sonar.hitIds.has(sig.id)) continue;
         const distance = Math.hypot(sig.sx - state.probeX, sig.sy - (state.probeY - 6));
@@ -4813,7 +5413,15 @@ body.tut-active .hud .intro-cue{opacity:.35;}
           state.sonar.hitIds.add(sig.id);
           sig.hold = Math.max(sig.hold, 4.4);
           sig.sonarGlow = Math.max(sig.sonarGlow, 1.5);
+          sweepHits.push({ sig, distance });
         }
+      }
+      // P16: one panned echo per frame — the nearest contact answers, the
+      // rest stay quiet so the return reads as a bearing, not a crowd.
+      if (sweepHits.length) {
+        sweepHits.sort((a, b) => a.distance - b.distance);
+        const nearest = sweepHits[0].sig;
+        Sound.echo((nearest.sx - state.probeX) / (state.W / 2));
       }
 
       const anomaly = state.anomaly;
@@ -4975,7 +5583,16 @@ body.tut-active .hud .intro-cue{opacity:.35;}
   }
 
   function updateAmbient(dt) {
-    if (!state.arms || state.silent) return;
+    if (!state.arms) return;
+    // P16: in silence the water still talks — one anonymous click every
+    // 20–40 s. No log, no tally, just the room not being empty.
+    if (state.silent) {
+      if (state.elapsed >= state.nextWhisper) {
+        state.nextWhisper = state.elapsed + 20 + Math.random() * 20;
+        Sound.whisper();
+      }
+      return;
+    }
     if (state.elapsed < state.nextAmbient) return;
     if (state.anomaly.active) {
       state.nextAmbient = state.elapsed + 10;
@@ -5032,13 +5649,16 @@ body.tut-active .hud .intro-cue{opacity:.35;}
         sig.sonarGlow = 0;
       }
       Sound.setQuiet(true);
+      Sound.tool('silentOn');
       addLog('SYS', '静默协议启用。主动扫描停止。', 'quiet');
       // P8: quiet water pays. Push the anomaly away and start the stakeout.
       state.anomaly.nextAt = state.elapsed + 60 + Math.random() * 40;
       state.silentBonusTimer = state.elapsed + 4 + Math.random() * 6;
+      state.nextWhisper = state.elapsed + 20 + Math.random() * 20;
       showToast('静默 · 稀有生物接近中', 2.2);
     } else {
       Sound.setQuiet(false);
+      Sound.tool('silentOff');
       addLog('SYS', '静默协议解除。光学增益恢复。');
       // P8: the find only exists while the probe stays quiet.
       state.silentBonusTimer = 0;
@@ -5063,14 +5683,16 @@ body.tut-active .hud .intro-cue{opacity:.35;}
       if (enabled) {
         Sound.setQuiet(state.silent);
         Sound.setBattery(state.batteryBand);
-        Sound.chime();
+        Sound.tool('audioOn');
         addLog('AUD', '环境音频接入。输出电平 -24 DB。', 'quiet');
       } else {
+        Sound.tool('audioOff');
         addLog('AUD', '环境音频关闭。', 'quiet');
       }
       updateHud();
     } catch (error) {
       state.audioEnabled = false;
+      Sound.tool('audioFail');
       addLog('AUD', '音频总线不可用。握手失败。', 'quiet');
       updateHud();
     }

@@ -12,6 +12,9 @@
 
 想在线分享时用 GitHub Pages（Settings → Pages → Branch: `main` / root），页面是纯前端，不需要任何配置。
 
+- 仓库：<https://github.com/weft-star/Pluto>
+- 在线地址（开启 Pages 且仓库为 Public 后生效）：<https://weft-star.github.io/Pluto/>
+
 ## 操作
 
 | 输入 | 作用 |

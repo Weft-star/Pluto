@@ -59,6 +59,36 @@
     非静默不出现；解除静默清零计时器。
   约束保持：不新增色板/外部资源；tick() 只增调用不改结构；新增覆盖层
     （#tutHint/#centerToast）均 fixed、pointer-events:none、Esc 可关、不遮挡 .ops。
+
+  v4 / P10+P11+P12+电量氛围 —— 长期目标 + 探索反馈 + 世界厚度
+  P10 图鉴持久化：
+    CODEX_KEY 'abyssal.codex.v1'；state.codex{types,maxDepth,silentFinds,total}，
+    init 读取失败用默认值；activateSignal 归档时累计并写 localStorage。
+    入口：status panel led-row 下方「CODEX / 图鉴」小按钮（不新增面板）+ C 键。
+    覆盖层 #codexOverlay：fixed 居中、Esc/背板/关闭钮可关、底部留白避开 .ops；
+    预留标签页结构（本轮：图鉴 + DS-06 档案）。无数据时显示「尚无记录」。
+  P11 深度视觉反馈：
+    ZONES 补 nextRamp（HADAL 自指）；buildBackdrop 按 depthFrac 用 bayer 混合
+    下一区 ramp 的色板索引（不引入新颜色）；getBackdropKey 粒度 /8→/4。
+    updateDepth 计算 depthVelocity（clamp ±80，轻平滑）；驱动：snow 粒子纵向
+    流速 ±0.008×|v|/80、背景 bgScroll 亚像素累积取整 ±1px、光锥 range 最多收 5%。
+    粒子数随深度 50→30→22（每跨 100m 增删，不重建数组）；800m 以下新增
+    sediment 粒子（vy 0.001–0.002，shelf 色，占比随深度增加）。
+    reduced-motion 跳过粒子加速与背景偏移，保留渐变混合。
+  P12 DS-06 前置探勘记录：
+    'abyssal.ds06.v1'；13 条记录池（类型 5 / 深度 4 / 异常 1·3·6·9），
+    unlockNarrative(id) 统一入口 + 每帧最多解锁一条的队列；解锁走
+    addLog('ARC','◇ '+文本,'quiet')，复用 log-item 样式不加 CSS 类。
+    深度锚点 200/600/1000/1400 双向跨越触发；异常按 echo 归档累计次数。
+    全解锁后延迟 3s 出收束日志（一次性，localStorage 记 final）。
+    档案页在 #codexOverlay 第二个标签：已解密 N/13，未解锁显示缺失。
+  电量氛围（永不阻断）：
+    state.battery 100 起，按区 0.2/0.25/0.3/0.4 每秒下降，静默 +0.8 回升，
+    声呐期间 +1.5。<20%：光锥 ×0.7、主输出增益 ×0.7、lowpass 600Hz、电量条
+    alert 色；<5%：光锥再暗（×0.42）、lowpass 320Hz。不做任何强制行为。
+    HUD：telemetry panel tape 下方新增独立 PWR 行（面板空间足够，未与
+    信号条共用一行——选择理由：两行各自有语义，共用会牺牲信号条的
+    六段刻度可读性）。音频链：master → batGain → batLP → destination。
 -->
 <html lang="zh-CN">
 <head>
@@ -864,6 +894,151 @@ body.tut-active .hud .intro-cue{opacity:.35;}
   text-overflow:ellipsis;
 }
 .task-line.is-done{color:var(--glow);}
+/* ----- P10/P12 档案覆盖层（fixed 居中，底部留白避开 .ops） ----- */
+.codex-overlay{
+  position:fixed;
+  inset:0;
+  z-index:50;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:18px 12px calc(84px + env(safe-area-inset-bottom));
+  background:rgba(3,5,9,.62);
+  opacity:0;
+  visibility:hidden;
+  transition:opacity .28s steps(3,end),visibility .28s;
+}
+.codex-overlay.is-open{opacity:1;visibility:visible;}
+.codex-panel{
+  width:min(430px,100%);
+  max-height:100%;
+  display:flex;
+  flex-direction:column;
+  border:1px solid rgba(46,125,138,.55);
+  background:rgba(5,8,13,.92);
+  box-shadow:0 0 24px rgba(5,8,13,.7);
+}
+.codex-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  padding:7px 9px;
+  border-bottom:1px solid var(--hair-dim);
+}
+.codex-tabs{display:flex;gap:5px;}
+.codex-tab{
+  padding:5px 10px;
+  border:1px solid rgba(46,125,138,.42);
+  background:rgba(5,8,13,.6);
+  color:var(--current);
+  font-family:var(--mono);
+  font-size:8px;
+  line-height:1;
+  letter-spacing:.14em;
+}
+.codex-tab.is-on{border-color:var(--glow);color:var(--foam);background:rgba(27,74,90,.48);}
+.codex-tab:focus-visible{outline:1px solid var(--glow);outline-offset:1px;}
+.codex-close{
+  padding:5px 8px;
+  border:1px solid rgba(46,125,138,.42);
+  background:rgba(5,8,13,.6);
+  color:var(--shelf);
+  font-family:var(--mono);
+  font-size:7px;
+  line-height:1;
+  letter-spacing:.12em;
+}
+.codex-close:hover{color:var(--foam);border-color:var(--glow);}
+.codex-close:focus-visible{outline:1px solid var(--glow);outline-offset:1px;}
+.codex-body{
+  padding:9px 11px 12px;
+  overflow-y:auto;
+  color:var(--haze);
+  font-size:9px;
+  line-height:1.7;
+  letter-spacing:.06em;
+}
+.codex-empty{color:var(--shelf);letter-spacing:.14em;text-align:center;padding:14px 0 10px;}
+.codex-group-title{
+  margin:9px 0 4px;
+  color:var(--current);
+  font-size:7px;
+  letter-spacing:.18em;
+}
+.codex-group-title:first-child{margin-top:0;}
+.codex-row{
+  display:flex;
+  align-items:baseline;
+  justify-content:space-between;
+  gap:10px;
+  padding:3px 0;
+  border-bottom:1px solid rgba(46,125,138,.16);
+}
+.codex-row .k{color:var(--current);letter-spacing:.1em;white-space:nowrap;}
+.codex-row .v{color:var(--foam);text-align:right;white-space:nowrap;}
+.codex-row .v.is-zero{color:var(--shelf);}
+.codex-meta{
+  margin-top:8px;
+  padding-top:6px;
+  border-top:1px solid var(--hair-dim);
+  color:var(--shelf);
+  font-size:8px;
+  letter-spacing:.12em;
+  display:flex;
+  justify-content:space-between;
+  gap:10px;
+}
+.dossier-item{
+  padding:4px 0 4px 8px;
+  border-left:1px solid rgba(94,234,212,.34);
+  color:var(--haze);
+}
+.dossier-item.is-locked{border-left-color:rgba(46,125,138,.3);color:var(--shelf);letter-spacing:.1em;}
+.dossier-item.is-final{border-left-color:var(--glow);color:var(--foam);margin-top:8px;}
+.dossier-item .d-id{color:var(--shelf);font-size:7px;letter-spacing:.14em;margin-right:6px;}
+.codex-btn{
+  margin-top:6px;
+  width:100%;
+  padding:5px 6px;
+  border:1px solid rgba(46,125,138,.42);
+  background:rgba(5,8,13,.5);
+  color:var(--current);
+  font-family:var(--mono);
+  font-size:7px;
+  line-height:1;
+  letter-spacing:.16em;
+}
+.codex-btn:hover{border-color:var(--glow);color:var(--foam);}
+.codex-btn:focus-visible{outline:1px solid var(--glow);outline-offset:1px;}
+/* ----- 电量氛围：telemetry 内 tape 下方的 PWR 行 ----- */
+.batt{
+  margin-top:7px;
+  display:flex;
+  align-items:center;
+  gap:7px;
+}
+.batt .batt-label{color:var(--shelf);font-size:6px;letter-spacing:.14em;line-height:1;}
+.batt .batt-bar{
+  flex:1;
+  height:4px;
+  border:1px solid rgba(46,125,138,.4);
+  background:rgba(5,8,13,.6);
+  position:relative;
+  overflow:hidden;
+}
+.batt .batt-bar i{
+  position:absolute;
+  inset:0 auto 0 0;
+  width:100%;
+  background:var(--glow);
+}
+.batt .batt-value{color:var(--current);font-size:7px;line-height:1;letter-spacing:.08em;min-width:20px;text-align:right;}
+.batt.is-low .batt-bar i{background:var(--current);}
+.batt.is-low .batt-value{color:var(--current);}
+.batt.is-crit .batt-bar i{background:var(--alert);}
+.batt.is-crit .batt-value,
+.batt.is-crit .batt-label{color:var(--alert);}
 .sig-label{
   position:absolute;
   top:0;
@@ -1297,6 +1472,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
   .sig-label.is-on{animation:none!important;}
   .ctrl.is-attn{animation:none!important;}
   .tut-hint,.center-toast{transition:none!important;}
+  .codex-overlay{transition:none!important;}
   .hud .panel{transition:none!important;}
   .screen.is-tearing,
   .screen.is-anomaly{animation:none!important;}
@@ -1377,6 +1553,11 @@ body.tut-active .hud .intro-cue{opacity:.35;}
         <span style="left:71.43%">1000</span>
         <span style="left:100%">1400</span>
       </div>
+      <div class="batt" id="battRow" role="img" aria-label="电量 100%">
+        <span class="batt-label">PWR</span>
+        <span class="batt-bar" aria-hidden="true"><i id="battFill"></i></span>
+        <span class="batt-value" id="battValue">100</span>
+      </div>
     </section>
 
     <section class="panel status" id="statusPanel" aria-label="设备状态">
@@ -1394,6 +1575,9 @@ body.tut-active .hud .intro-cue{opacity:.35;}
         <span class="led"><i id="ledSonar"></i><span>SONAR</span><b id="sonarReadout">RDY</b></span>
         <span class="led"><i id="ledLink"></i><span>LINK</span><b id="linkReadout">OK</b></span>
       </div>
+      <button class="codex-btn" id="codexBtn" type="button" aria-haspopup="dialog" aria-expanded="false">
+        CODEX / 图鉴 <kbd style="letter-spacing:.08em;">C</kbd>
+      </button>
       <div class="depth-controls">
         <button class="depth-btn" id="ascendBtn" type="button" aria-label="上浮五十米"><span aria-hidden="true">▲</span>上浮<em>50M</em></button>
         <button class="depth-btn" id="descendBtn" type="button" aria-label="下潜五十米"><span aria-hidden="true">▼</span>下潜<em>50M</em></button>
@@ -1432,6 +1616,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
       <span><kbd>SPACE</kbd>声呐</span>
       <span><kbd>S</kbd>静默</span>
       <span><kbd>A</kbd>音频</span>
+      <span><kbd>C</kbd>图鉴</span>
       <span><kbd>WHEEL</kbd><kbd>↑↓</kbd>深度</span>
       <span><kbd>R</kbd>复位</span>
       <span><kbd>ESC</kbd>取消</span>
@@ -1449,6 +1634,20 @@ body.tut-active .hud .intro-cue{opacity:.35;}
 
   <div class="screen-edge" aria-hidden="true"></div>
   <div class="crt" aria-hidden="true"><span class="scanband"></span></div>
+
+  <div class="codex-overlay" id="codexOverlay" role="dialog" aria-modal="true" aria-label="探勘档案" hidden>
+    <div class="codex-panel">
+      <header class="codex-head">
+        <div class="codex-tabs" role="tablist" aria-label="档案标签页">
+          <button class="codex-tab is-on" id="codexTabLog" type="button" role="tab" aria-selected="true">图鉴</button>
+          <button class="codex-tab" id="codexTabDossier" type="button" role="tab" aria-selected="false">DS-06 档案</button>
+        </div>
+        <button class="codex-close" id="codexClose" type="button">关闭 ESC</button>
+      </header>
+      <div class="codex-body" id="codexPaneLog" role="tabpanel" aria-label="图鉴"></div>
+      <div class="codex-body" id="codexPaneDossier" role="tabpanel" aria-label="DS-06 档案" hidden></div>
+    </div>
+  </div>
 
   <div class="boot" id="boot" aria-hidden="true">
     <div class="boot-scan"></div>
@@ -1565,6 +1764,11 @@ body.tut-active .hud .intro-cue{opacity:.35;}
       far: C.void, near: C.void, edge: C.shelf, accent: C.current, extras: 'trench'
     }
   ];
+  // P11: each zone leans toward the next one's ramp as depthFrac grows.
+  ZONES[0].nextRamp = ZONES[1].ramp;
+  ZONES[1].nextRamp = ZONES[2].ramp;
+  ZONES[2].nextRamp = ZONES[3].ramp;
+  ZONES[3].nextRamp = ZONES[3].ramp;
 
   const TYPES = [
     { code: 'ORG', kind: 'organism', cn: '未知生物', en: 'UNKNOWN ORGANISM', range: [38, 176] },
@@ -1720,6 +1924,17 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     taskLine: $('#taskLine'),
     tutHint: $('#tutHint'),
     centerToast: $('#centerToast'),
+    battRow: $('#battRow'),
+    battFill: $('#battFill'),
+    battValue: $('#battValue'),
+    codexOverlay: $('#codexOverlay'),
+    codexPanel: document.querySelector('.codex-panel'),
+    codexTabLog: $('#codexTabLog'),
+    codexTabDossier: $('#codexTabDossier'),
+    codexClose: $('#codexClose'),
+    codexPaneLog: $('#codexPaneLog'),
+    codexPaneDossier: $('#codexPaneDossier'),
+    codexBtn: $('#codexBtn'),
     live: $('#live'),
     tapeSegments: Array.from(document.querySelectorAll('.tape i')),
     meterBars: Array.from(document.querySelectorAll('#signalMeter i'))
@@ -1763,6 +1978,12 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     completeUntil: 0, completeFlashUntil: 0,
     sectionTarget: 6, sectionArchived: 0, sectionDone: false,
     silentBonusTimer: 0,
+    codex: { types: {}, maxDepth: 688, silentFinds: 0, total: 0 },
+    narrative: { unlocked: [], anomalyCount: 0, final: false },
+    narrativeQueue: [], narrativeFinaleScheduled: false,
+    depthVelocity: 0, prevDepth: START_DEPTH, bgScroll: 0,
+    battery: 100, batteryBand: 'ok',
+    particleBand: Math.floor(START_DEPTH / 100),
     tutorial: {
       active: false, step: -1, forceSig: null,
       bypassRange: false, forceLabel: false,
@@ -1810,8 +2031,20 @@ body.tut-active .hud .intro-cue{opacity:.35;}
 
         const master = audio.createGain();
         master.gain.value = 0.0001;
-        master.connect(audio.destination);
+        // 电量氛围: everything the probe emits passes through this pair, so a
+        // dying battery can dim and muffle output without touching gameplay.
+        const batGain = audio.createGain();
+        batGain.gain.value = 1;
+        const batLP = audio.createBiquadFilter();
+        batLP.type = 'lowpass';
+        batLP.frequency.value = 18000;
+        batLP.Q.value = 0.4;
+        master.connect(batGain);
+        batGain.connect(batLP);
+        batLP.connect(audio.destination);
         this.master = master;
+        this.batGain = batGain;
+        this.batLP = batLP;
 
         const ambient = audio.createGain();
         ambient.gain.value = 0.15;
@@ -1946,6 +2179,22 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     ensureRunning() {
       if (!this.enabled || !this.ctx) return;
       if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
+    },
+
+    // 电量氛围: 'ok' / 'low' (<20%) / 'crit' (<5%). Visual-only if audio is off.
+    setBattery(band) {
+      if (!this.ctx || !this.batGain || !this.batLP) return;
+      const now = this.ctx.currentTime;
+      if (band === 'crit') {
+        this.batGain.gain.setTargetAtTime(0.5, now, 0.4);
+        this.batLP.frequency.setTargetAtTime(320, now, 0.4);
+      } else if (band === 'low') {
+        this.batGain.gain.setTargetAtTime(0.7, now, 0.4);
+        this.batLP.frequency.setTargetAtTime(600, now, 0.4);
+      } else {
+        this.batGain.gain.setTargetAtTime(1, now, 0.4);
+        this.batLP.frequency.setTargetAtTime(18000, now, 0.4);
+      }
     },
 
     applyTone(immediate = false) {
@@ -2148,7 +2397,8 @@ body.tut-active .hud .intro-cue{opacity:.35;}
   }
 
   function getBackdropKey() {
-    return state.W + 'x' + state.H + ':' + state.zone.id + ':' + Math.round(state.depth / 8);
+    // P11: /4 keeps the ramp blend continuous while still caching rebuilds.
+    return state.W + 'x' + state.H + ':' + state.zone.id + ':' + Math.round(state.depth / 4);
   }
 
   function ensureBackdrop(force = false) {
@@ -2176,6 +2426,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     const image = bctx.createImageData(W, H);
     const data = image.data;
     const ramp = state.zone.ramp;
+    const nextRamp = state.zone.nextRamp || ramp;
     const zone = state.zone;
     const depthFrac = clamp((state.depth - zone.min) / Math.max(1, zone.max - zone.min), 0, 1);
     const span = ramp.length - 1;
@@ -2188,7 +2439,10 @@ body.tut-active .hud .intro-cue{opacity:.35;}
       const ny = (ty - 0.5) * 2;
 
       for (let x = 0; x < W; x++) {
-        let index = ramp[Math.min(span, lower + (bayer(x, y) < fraction ? 1 : 0))];
+        const i = Math.min(span, lower + (bayer(x, y) < fraction ? 1 : 0));
+        // P11: order-kept dither toward the next zone's ramp — no new colors,
+        // the palette index just drifts as the probe settles deeper.
+        let index = bayer(x, y) < depthFrac ? nextRamp[i] : ramp[i];
 
         const nx = (x / Math.max(1, W - 1) - 0.5) * 2;
         const vignette = clamp((Math.sqrt(nx * nx * 0.82 + ny * ny * 0.55) - 0.5) * 1.6, 0, 1);
@@ -2239,7 +2493,9 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     const dy = y - oy;
     const distance = Math.sqrt(dx * dx + dy * dy);
     // Deep water eats light; the same lamp reaches less far below 900 m.
-    const range = beamRange() * (state.depth > 900 ? 0.9 : 1);
+    // P11: a fast dive also pulls the cone in a touch (max 5%).
+    const range = beamRange() * (state.depth > 900 ? 0.9 : 1)
+      * (1 - clamp(Math.abs(state.depthVelocity), 0, 80) / 80 * 0.05);
     if (distance < 2 || distance > range) return 0;
     const angle = Math.atan2(dy, dx);
     const diff = Math.abs(wrapAngle(angle - state.lamp.angle));
@@ -2929,6 +3185,10 @@ body.tut-active .hud .intro-cue{opacity:.35;}
           ctx.fillStyle = exposure > 0.15 ? C.haze : C.shelf;
           ctx.fillRect(x, y - 1, 1, 1);
         }
+      } else if (p.kind === 'sediment') {
+        // P11: settling silt. Dim even in the beam, so it reads as mass.
+        ctx.fillStyle = exposure > 0.25 ? C.current : C.shelf;
+        ctx.fillRect(x, y, 1, 1);
       } else {
         const twinkle = Math.sin(now * p.frequency + p.phase) > 0.82;
         ctx.fillStyle = exposure > 0.3 ? (twinkle ? C.foam : C.haze)
@@ -3266,7 +3526,16 @@ body.tut-active .hud .intro-cue{opacity:.35;}
   function renderScene(now) {
     ensureBackdrop();
     if (state.bgCanvas) {
-      ctx.drawImage(state.bgCanvas, 0, 0);
+      const scroll = Math.round(state.bgScroll);
+      if (scroll !== 0) {
+        // P11: the water column slides one pixel against vertical motion.
+        ctx.drawImage(state.bgCanvas, 0, scroll);
+        ctx.fillStyle = C.void;
+        if (scroll > 0) ctx.fillRect(0, 0, state.W, scroll);
+        else ctx.fillRect(0, state.H + scroll, state.W, -scroll);
+      } else {
+        ctx.drawImage(state.bgCanvas, 0, 0);
+      }
     } else {
       ctx.fillStyle = C.void;
       ctx.fillRect(0, 0, state.W, state.H);
@@ -3308,33 +3577,69 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     for (const timer of due) timer.fn();
   }
 
+  function makeParticle(kind) {
+    return {
+      kind,
+      x: kind === 'bubble' ? 0.06 + Math.random() * 0.88 : Math.random(),
+      y: kind === 'bubble' ? 0.52 + Math.random() * 0.47 : Math.random(),
+      vx: (Math.random() - 0.5) * 0.0045,
+      vy: kind === 'bubble' ? -(0.009 + Math.random() * 0.019)
+        : kind === 'sediment' ? 0.001 + Math.random() * 0.001
+        : 0.0022 + Math.random() * 0.0075,
+      sway: kind === 'sediment' ? 0.0006 + Math.random() * 0.0012 : 0.0015 + Math.random() * 0.0055,
+      frequency: 0.45 + Math.random() * 1.6,
+      phase: Math.random() * TAU
+    };
+  }
+
+  // P11: fewer drifters the deeper the probe sits (200m→50, 1000m→30, 1400m→22).
+  function particleTarget() {
+    const depth = state.depth;
+    if (depth <= 200) return 50;
+    if (depth <= 1000) return Math.round(50 - (depth - 200) / 800 * 20);
+    return Math.round(30 - (depth - 1000) / 400 * 8);
+  }
+
   function makeParticles() {
-    const count = state.reduced ? 44 : 72;
+    const count = state.reduced ? Math.min(44, particleTarget()) : particleTarget();
     const particles = [];
     for (let i = 0; i < count; i++) {
       const roll = Math.random();
       const kind = roll < 0.17 ? 'bubble' : roll < 0.31 ? 'plankton' : 'snow';
-      const x = kind === 'bubble' ? 0.06 + Math.random() * 0.88 : Math.random();
-      const y = kind === 'bubble' ? 0.52 + Math.random() * 0.47 : Math.random();
-      particles.push({
-        kind,
-        x,
-        y,
-        vx: (Math.random() - 0.5) * 0.0045,
-        vy: kind === 'bubble' ? -(0.009 + Math.random() * 0.019) : 0.0022 + Math.random() * 0.0075,
-        sway: 0.0015 + Math.random() * 0.0055,
-        frequency: 0.45 + Math.random() * 1.6,
-        phase: Math.random() * TAU
-      });
+      particles.push(makeParticle(kind));
     }
     state.particles = particles;
   }
 
+  // P11: grow or shrink the population a hundred metres at a time; new
+  // spawns below 800 m increasingly come in as slow-settling sediment.
+  function tuneParticles() {
+    const target = state.reduced ? Math.min(44, particleTarget()) : particleTarget();
+    const particles = state.particles;
+    while (particles.length > target) particles.pop();
+    while (particles.length < target) {
+      const roll = Math.random();
+      const sedimentShare = state.depth > 800
+        ? Math.min(0.34, 0.06 + (state.depth - 800) / 1400)
+        : 0;
+      let kind;
+      if (roll < 0.17) kind = 'bubble';
+      else if (roll < 0.31) kind = 'plankton';
+      else if (roll < 0.31 + sedimentShare) kind = 'sediment';
+      else kind = 'snow';
+      particles.push(makeParticle(kind));
+    }
+  }
+
   function updateParticles(dt) {
     const speed = state.silent ? 0.42 : 1;
+    // P11: a dive drags the snow column down, a rise lets it float back up.
+    // Reduced-motion users get the calm version.
+    const flow = state.reduced ? 0
+      : 0.008 * (clamp(Math.abs(state.depthVelocity), 0, 80) / 80) * (state.depthVelocity >= 0 ? 1 : -1);
     for (const p of state.particles) {
       p.x += (p.vx + Math.sin(state.elapsed * p.frequency + p.phase) * p.sway) * dt * speed;
-      p.y += p.vy * dt * speed;
+      p.y += (p.vy + (p.kind === 'snow' ? flow : 0)) * dt * speed;
       if (p.y < -0.04) {
         p.y = 1.03;
         p.x = Math.random();
@@ -3744,6 +4049,210 @@ body.tut-active .hud .intro-cue{opacity:.35;}
   };
 
   /* ---------------------------------------------------------------------
+     P10/P12: persistent codex and the DS-06 dossier overlay.
+  --------------------------------------------------------------------- */
+  const CODEX_KEY = 'abyssal.codex.v1';
+  const DS06_KEY = 'abyssal.ds06.v1';
+  const DS06_FINAL_TEXT = 'DS-06 记录：如果你读到这里，说明我停下的地方，你还在。';
+  const DS06_RECORDS = [
+    { id: 'type:ORG', group: 'type', text: 'DS-06 记录：该生物在光照下不逃逸。它只是看着。' },
+    { id: 'type:VNT', group: 'type', text: 'DS-06 记录：热液脉动周期 4.2 秒。与心跳接近。' },
+    { id: 'type:WRK', group: 'type', text: 'DS-06 记录：船体编号已被磨平。桅杆朝上，像在指路。' },
+    { id: 'type:RUN', group: 'type', text: 'DS-06 记录：遗迹在声呐关闭时更清晰。原因不明。' },
+    { id: 'type:ECH', group: 'type', text: 'DS-06 记录：该回响的间隔在缩短。每次约 0.3 秒。' },
+    { id: 'depth:200', group: 'depth', text: 'DS-06 记录：进入暮光带。光在这里开始犹豫。' },
+    { id: 'depth:600', group: 'depth', text: 'DS-06 记录：深渊带。压强六十巴。外壳在唱歌。' },
+    { id: 'depth:1000', group: 'depth', text: 'DS-06 记录：超深渊带。已超过设计深度。继续。' },
+    { id: 'depth:1400', group: 'depth', text: 'DS-06 记录：一千四百米。没有底。只有更深的黑。' },
+    { id: 'anomaly:1', group: 'anomaly', text: 'DS-06 记录：异常第一次出现。我把它记下来了。' },
+    { id: 'anomaly:3', group: 'anomaly', text: 'DS-06 记录：异常第三次出现。它每次都更近。' },
+    { id: 'anomaly:6', group: 'anomaly', text: 'DS-06 记录：第六次。我不再记录了。如果你看到这条，请继续。' },
+    { id: 'anomaly:9', group: 'anomaly', text: 'DS-06 记录：▓▒░ …（后续字节损坏）' }
+  ];
+
+  function loadStore(key, fallback) {
+    try {
+      const raw = window.localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : fallback;
+    } catch (error) {
+      return fallback;
+    }
+  }
+  function saveStore(key, value) {
+    try { window.localStorage.setItem(key, JSON.stringify(value)); } catch (error) { /* private mode */ }
+  }
+
+  function loadPersistentState() {
+    const codex = loadStore(CODEX_KEY, null);
+    if (codex && typeof codex === 'object') {
+      state.codex.types = (codex.types && typeof codex.types === 'object') ? codex.types : {};
+      state.codex.maxDepth = Number.isFinite(codex.maxDepth) ? codex.maxDepth : 688;
+      state.codex.silentFinds = Number.isFinite(codex.silentFinds) ? codex.silentFinds : 0;
+      state.codex.total = Number.isFinite(codex.total) ? codex.total : 0;
+    }
+    const narrative = loadStore(DS06_KEY, null);
+    if (narrative && typeof narrative === 'object') {
+      const valid = new Set(DS06_RECORDS.map((item) => item.id));
+      state.narrative.unlocked = Array.isArray(narrative.unlocked)
+        ? narrative.unlocked.filter((id) => typeof id === 'string' && valid.has(id))
+        : [];
+      state.narrative.anomalyCount = Number.isFinite(narrative.anomalyCount) ? narrative.anomalyCount : 0;
+      state.narrative.final = narrative.final === true;
+    }
+  }
+
+  // P12: one unlock per frame; the rest wait in line so the log never floods.
+  function unlockNarrative(id) {
+    if (!id) return;
+    if (state.narrative.unlocked.indexOf(id) !== -1) return;
+    if (state.narrativeQueue.indexOf(id) !== -1) return;
+    state.narrativeQueue.push(id);
+  }
+
+  function fireNarrativeFinale() {
+    addLog('ARC', '◇ ' + DS06_FINAL_TEXT, 'quiet');
+    state.narrative.final = true;
+    saveStore(DS06_KEY, state.narrative);
+    if (state.codexOverlay.classList.contains('is-open')) renderCodexPanes();
+  }
+
+  function processNarrative() {
+    if (!state.narrativeQueue.length) {
+      // All thirteen found but the finale never landed (a reset can clear its
+      // timer): re-arm it once rather than lose the ending.
+      if (!state.narrativeFinaleScheduled && !state.narrative.final &&
+          state.narrative.unlocked.length >= DS06_RECORDS.length) {
+        state.narrativeFinaleScheduled = true;
+        later(3, fireNarrativeFinale);
+      }
+      return;
+    }
+    const id = state.narrativeQueue.shift();
+    if (state.narrative.unlocked.indexOf(id) !== -1) return;
+    const record = DS06_RECORDS.find((item) => item.id === id);
+    if (!record) return;
+    state.narrative.unlocked.push(id);
+    saveStore(DS06_KEY, state.narrative);
+    addLog('ARC', '◇ ' + record.text, 'quiet');
+    if (state.codexOverlay.classList.contains('is-open')) renderCodexPanes();
+    if (state.narrative.unlocked.length >= DS06_RECORDS.length && !state.narrative.final &&
+        !state.narrativeFinaleScheduled) {
+      state.narrativeFinaleScheduled = true;
+      later(3, fireNarrativeFinale);
+    }
+  }
+
+  function renderCodexPanes() {
+    if (!dom.codexPaneLog || !dom.codexPaneDossier) return;
+    // --- 图鉴 ---
+    const codex = state.codex;
+    const log = dom.codexPaneLog;
+    log.textContent = '';
+    if (!codex.total) {
+      const empty = document.createElement('div');
+      empty.className = 'codex-empty';
+      empty.textContent = '尚无记录';
+      log.appendChild(empty);
+    } else {
+      for (const type of TYPES) {
+        const row = document.createElement('div');
+        row.className = 'codex-row';
+        const key = document.createElement('span');
+        key.className = 'k';
+        key.textContent = type.cn + ' / ' + type.en;
+        const value = document.createElement('span');
+        value.className = 'v' + (codex.types[type.code] ? '' : ' is-zero');
+        value.textContent = codex.types[type.code] ? codex.types[type.code] + ' 次' : '—';
+        row.appendChild(key);
+        row.appendChild(value);
+        log.appendChild(row);
+      }
+      const meta = document.createElement('div');
+      meta.className = 'codex-meta';
+      const left = document.createElement('span');
+      left.textContent = '最深 ' + codex.maxDepth + 'M · 静默发现 ' + codex.silentFinds;
+      const right = document.createElement('span');
+      right.textContent = '总归档 ' + codex.total;
+      meta.appendChild(left);
+      meta.appendChild(right);
+      log.appendChild(meta);
+    }
+
+    // --- DS-06 档案 ---
+    const dossier = dom.codexPaneDossier;
+    dossier.textContent = '';
+    const counter = document.createElement('div');
+    counter.className = 'codex-meta';
+    counter.style.margin = '0 0 6px';
+    counter.style.borderTop = '0';
+    counter.style.paddingTop = '0';
+    counter.textContent = '已解密 ' + state.narrative.unlocked.length + ' / ' + DS06_RECORDS.length;
+    dossier.appendChild(counter);
+    const groups = [
+      ['type', '类型接触'],
+      ['depth', '深度锚点'],
+      ['anomaly', '异常事件']
+    ];
+    for (const [group, title] of groups) {
+      const heading = document.createElement('div');
+      heading.className = 'codex-group-title';
+      heading.textContent = title;
+      dossier.appendChild(heading);
+      for (const record of DS06_RECORDS) {
+        if (record.group !== group) continue;
+        const item = document.createElement('div');
+        const unlocked = state.narrative.unlocked.indexOf(record.id) !== -1;
+        item.className = 'dossier-item' + (unlocked ? '' : ' is-locked');
+        item.textContent = unlocked ? record.text : '◇ ▓▒░ 记录缺失';
+        dossier.appendChild(item);
+      }
+    }
+    if (state.narrative.final) {
+      const finalItem = document.createElement('div');
+      finalItem.className = 'dossier-item is-final';
+      finalItem.textContent = DS06_FINAL_TEXT;
+      dossier.appendChild(finalItem);
+    }
+  }
+
+  function openCodex() {
+    if (state.codexOpen) return;
+    state.codexOpen = true;
+    renderCodexPanes();
+    dom.codexOverlay.hidden = false;
+    // Double rAF so the transition sees the hidden→visible flip.
+    window.requestAnimationFrame(() => dom.codexOverlay.classList.add('is-open'));
+    dom.codexBtn.setAttribute('aria-expanded', 'true');
+    dom.codexTabLog.focus();
+  }
+
+  function closeCodex() {
+    if (!state.codexOpen) return;
+    state.codexOpen = false;
+    dom.codexOverlay.classList.remove('is-open');
+    dom.codexBtn.setAttribute('aria-expanded', 'false');
+    window.setTimeout(() => {
+      if (!state.codexOpen) dom.codexOverlay.hidden = true;
+    }, state.reduced ? 0 : 300);
+    dom.codexBtn.focus();
+  }
+
+  function toggleCodex() {
+    if (state.codexOpen) closeCodex();
+    else openCodex();
+  }
+
+  function setCodexTab(which) {
+    const logOn = which === 'log';
+    dom.codexTabLog.classList.toggle('is-on', logOn);
+    dom.codexTabDossier.classList.toggle('is-on', !logOn);
+    dom.codexTabLog.setAttribute('aria-selected', logOn ? 'true' : 'false');
+    dom.codexTabDossier.setAttribute('aria-selected', logOn ? 'false' : 'true');
+    dom.codexPaneLog.hidden = !logOn;
+    dom.codexPaneDossier.hidden = logOn;
+  }
+
+  /* ---------------------------------------------------------------------
      Labels follow the low-resolution signal positions without subpixel text.
   --------------------------------------------------------------------- */
   function labelScore(sig) {
@@ -3921,6 +4430,21 @@ body.tut-active .hud .intro-cue{opacity:.35;}
         if (archived === state.signals.length) {
           state.nextSpawnAt = Math.min(state.nextSpawnAt, state.elapsed + 19);
           later(1.1, () => addLog('SYS', '全部回波归档。等待新的接触。', 'quiet'));
+        }
+      }
+      // P10: the field guide remembers every contact, across sessions.
+      const codex = state.codex;
+      codex.types[sig.type.code] = (codex.types[sig.type.code] || 0) + 1;
+      codex.total += 1;
+      if (sig.silentFind) codex.silentFinds += 1;
+      if (state.depth > codex.maxDepth) codex.maxDepth = Math.round(state.depth);
+      saveStore(CODEX_KEY, codex);
+      // P12: DS-06 records — first contact of a kind, and echo tallies.
+      unlockNarrative('type:' + sig.type.code);
+      if (sig.type.kind === 'echo') {
+        state.narrative.anomalyCount += 1;
+        for (const threshold of [1, 3, 6, 9]) {
+          if (state.narrative.anomalyCount >= threshold) unlockNarrative('anomaly:' + threshold);
         }
       }
     } else {
@@ -4115,6 +4639,15 @@ body.tut-active .hud .intro-cue{opacity:.35;}
         : '本区段 ' + Math.min(state.sectionArchived, state.sectionTarget) + '/' + state.sectionTarget;
       dom.taskLine.classList.toggle('is-done', state.sectionDone);
     }
+    // 电量氛围: pixel bar under the depth tape.
+    if (dom.battFill) {
+      const battery = Math.round(state.battery);
+      dom.battFill.style.width = battery + '%';
+      if (dom.battValue) dom.battValue.textContent = pad(battery, 3);
+      dom.battRow.classList.toggle('is-low', state.batteryBand === 'low');
+      dom.battRow.classList.toggle('is-crit', state.batteryBand === 'crit');
+      dom.battRow.setAttribute('aria-label', '电量 ' + battery + '%');
+    }
   }
 
   /* ---------------------------------------------------------------------
@@ -4140,6 +4673,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
   }
 
   function updateDepth(dt) {
+    const prevDepth = state.depth;
     const difference = state.targetDepth - state.depth;
     if (Math.abs(difference) < 0.02) {
       state.depth = state.targetDepth;
@@ -4147,6 +4681,36 @@ body.tut-active .hud .intro-cue{opacity:.35;}
       state.depth += difference * Math.min(1, dt * 3.4);
     }
     state.depth = clamp(state.depth, 0, MAX_DEPTH);
+
+    // P11: vertical motion in m/s, clamped to ±80 and lightly smoothed so a
+    // single 50 m key-press does not spike the whole screen.
+    const rawVelocity = dt > 0 ? (state.depth - prevDepth) / dt : 0;
+    state.depthVelocity = clamp(
+      state.depthVelocity + (rawVelocity - state.depthVelocity) * Math.min(1, dt * 9),
+      -80, 80
+    );
+    if (!state.reduced) {
+      state.bgScroll = clamp(state.bgScroll + state.depthVelocity * dt * 0.05, -1.2, 1.2);
+      if (Math.abs(state.depthVelocity) < 0.5) state.bgScroll *= Math.max(0, 1 - dt * 5);
+    } else {
+      state.bgScroll = 0;
+    }
+
+    // P11: particle population follows the depth a hundred metres at a time.
+    const band = Math.floor(state.depth / 100);
+    if (band !== state.particleBand) {
+      state.particleBand = band;
+      tuneParticles();
+    }
+
+    // P12: depth anchors unlock DS-06 records on crossing, either direction.
+    for (const anchor of [200, 600, 1000, 1400]) {
+      if ((prevDepth < anchor && state.depth >= anchor) ||
+          (prevDepth > anchor && state.depth <= anchor)) {
+        unlockNarrative('depth:' + anchor);
+      }
+    }
+
     const nextZone = zoneAt(state.depth);
     if (nextZone.id !== state.zone.id) {
       state.zone = nextZone;
@@ -4162,6 +4726,22 @@ body.tut-active .hud .intro-cue{opacity:.35;}
         state.sectionDone = false;
         addLog('SYS', '进入 ' + nextZone.cn + '。新目标：' + state.sectionTarget + ' 个归档。', 'quiet');
       }
+    }
+  }
+
+  // 电量氛围: drains by zone, recovers in silence, costs extra on sonar.
+  // It only ever changes how the probe looks and sounds — never what it can do.
+  function updateBattery(dt) {
+    if (!state.arms) return;
+    let rate = { PHOTIC: 0.2, TWILIGHT: 0.25, ABYSSAL: 0.3, HADAL: 0.4 }[state.zone.id] || 0.3;
+    if (state.silent) rate -= 0.8;
+    if (state.sonar.active) rate += 1.5;
+    state.battery = clamp(state.battery - rate * dt, 0, 100);
+    const band = state.battery < 5 ? 'crit' : state.battery < 20 ? 'low' : 'ok';
+    if (band !== state.batteryBand) {
+      state.batteryBand = band;
+      Sound.setBattery(band);
+      updateHud();
     }
   }
 
@@ -4188,7 +4768,9 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     if (state.anomaly.active && !state.reduced) {
       flicker *= 0.52 + 0.48 * (0.5 + 0.5 * Math.sin(state.elapsed * 39));
     }
-    state.lamp.power = clamp(base * warm * flicker, 0, 1);
+    // 电量氛围: a tired cell dims the lamp; nothing else changes.
+    const batteryDim = state.batteryBand === 'crit' ? 0.6 : state.batteryBand === 'low' ? 0.7 : 1;
+    state.lamp.power = clamp(base * warm * flicker * batteryDim, 0, 1);
   }
 
   function fireSonar() {
@@ -4480,6 +5062,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
       dom.audioBtn.classList.remove('is-attn');
       if (enabled) {
         Sound.setQuiet(state.silent);
+        Sound.setBattery(state.batteryBand);
         Sound.chime();
         addLog('AUD', '环境音频接入。输出电平 -24 DB。', 'quiet');
       } else {
@@ -4543,6 +5126,15 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     state.silentBonusTimer = 0;
     if (state.tutorial.active) TUT.finish(false);
     hideToast();
+    closeCodex();
+    // 电量氛围 / P11: a cold start refills the cell and stills the water.
+    state.depthVelocity = 0;
+    state.bgScroll = 0;
+    state.battery = 100;
+    state.batteryBand = 'ok';
+    Sound.setBattery('ok');
+    state.particleBand = Math.floor(START_DEPTH / 100);
+    state.narrativeFinaleScheduled = false;
     state.nextAmbient = 32;
     state.nextSpawnAt = 38;
     state.lastContactLog = -99;
@@ -4621,6 +5213,8 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     updateAnomaly(dt);
     updateAmbient(dt);
     updateSpawns();
+    updateBattery(dt);
+    processNarrative();
     updateTyping(dt);
 
     state.hudAcc += dt;
@@ -4871,6 +5465,12 @@ body.tut-active .hud .intro-cue{opacity:.35;}
       }
       return;
     }
+    if (key === 'c' || key === 'C') {
+      if (event.repeat) return;
+      event.preventDefault();
+      toggleCodex();
+      return;
+    }
     if (key === 'r' || key === 'R') {
       if (event.repeat) return;
       event.preventDefault();
@@ -4879,6 +5479,10 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     }
     if (key === 'Escape' || key === 'Esc') {
       event.preventDefault();
+      if (state.codexOpen) {
+        closeCodex();
+        return;
+      }
       if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
       state.selected = null;
       updateLabels();
@@ -4967,6 +5571,13 @@ body.tut-active .hud .intro-cue{opacity:.35;}
       hideCue();
       toggleAudio();
     });
+    dom.codexBtn.addEventListener('click', () => toggleCodex());
+    dom.codexClose.addEventListener('click', () => closeCodex());
+    dom.codexTabLog.addEventListener('click', () => setCodexTab('log'));
+    dom.codexTabDossier.addEventListener('click', () => setCodexTab('dossier'));
+    dom.codexOverlay.addEventListener('click', (event) => {
+      if (event.target === dom.codexOverlay) closeCodex();
+    });
     dom.ascendBtn.addEventListener('click', () => {
       hideCue();
       adjustDepth(-50);
@@ -4993,6 +5604,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
 
   function init() {
     state.reduced = Boolean(reduceMedia && reduceMedia.matches);
+    loadPersistentState();
     bindEvents();
     resizeScene();
     Sound.setZone(state.zone.id);

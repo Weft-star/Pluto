@@ -4,6 +4,50 @@
 
 ---
 
+## v4 — 2026-10-18 · P10 图鉴 + P11 深度视觉 + P12 DS-06 档案 + 电量氛围
+
+**本轮核心**：「长期目标 + 探索反馈 + 世界厚度」。电量仅作氛围，永不阻断操作。
+
+### P10 图鉴持久化
+
+- `CODEX_KEY 'abyssal.codex.v1'`；`state.codex{types, maxDepth, silentFinds, total}`，init 读取失败用默认值。
+- `activateSignal` 归档时累计（类型计数 / 总数 / 静默发现 / 最深发现深度）并写 localStorage。
+- 入口：status panel led-row 下方「CODEX / 图鉴」按钮（不新增面板）+ `C` 键 + hints 提示。
+- `#codexOverlay`：fixed 居中、Esc / 背板点击 / 关闭钮均可关；底部留白 84px 避开 `.ops`；标签页结构预留（本轮两个标签）。
+- 无数据时显示「尚无记录」；每类未归档显示「—」。
+
+### P11 深度视觉反馈
+
+- `ZONES` 补 `nextRamp`（HADAL 自指）；`buildBackdrop` 按 `depthFrac` 用 bayer 对色板索引做逐像素混合——**不引入新颜色**，688→999m 背景连续变暗，不在 1000m 突变。
+- `getBackdropKey` 粒度 /8→/4（配合 110ms 重建节流）。
+- `state.depthVelocity`（m/s，clamp ±80 + 轻平滑）驱动三项：
+  - snow 粒子纵向流速 `±0.008×|v|/80`（下潜加速下落，上浮反向）；
+  - `state.bgScroll` 亚像素累积取整 `±1px`，背景随下潜轻微上移，停止 ~1s 内回零；
+  - `lightExposureAt` range 最多收窄 5%。
+- 粒子数随深度 50→30→22（每跨 100m 增删，不重建数组）；800m 以下新增 `sediment` 粒子（vy 0.001–0.002、shelf 色、占比随深度 6%→34%）。
+- reduced-motion：跳过粒子加速与背景偏移，保留渐变混合。
+
+### P12 DS-06 前置探勘记录
+
+- `'abyssal.ds06.v1'`；13 条记录池：类型 5（首次归档对应 type）/ 深度 4（跨过 200/600/1000/1400，双向）/ 异常 1·3·6·9（echo 归档累计次数）。
+- `unlockNarrative(id)` 统一入口 + 每帧最多解锁一条的队列；日志 `addLog('ARC', '◇ '+文本, 'quiet')`，复用 log-item 样式，未新增 CSS 类。
+- 全解锁后延迟 3s 收束日志「如果你读到这里，说明我停下的地方，你还在。」——`final` 写入 localStorage，只出现一次；复位会丢计时器的边角情况在 `processNarrative` 里重新武装。
+- 档案页 = 图鉴覆盖层第二个标签：三组分列，未解锁显示「◇ ▓▒░ 记录缺失」，顶部「已解密 N / 13」，final 单独置底。
+
+### 电量氛围（不限制）
+
+- `state.battery` 100 起：PHOTIC 0.2 / TWILIGHT 0.25 / ABYSSAL 0.3 / HADAL 0.4 每秒；静默 +0.8 回升；声呐期间 +1.5。
+- <20%：光锥 ×0.7、主输出增益 ×0.7、lowpass 600Hz、电量条 alert 色；<5%：光锥 ×0.42、lowpass 320Hz。
+- HUD：telemetry panel tape 下方**独立 PWR 行**（未与信号条共用——理由：信号条的六段刻度可读性值得保留，且 telemetry 纵向有空间）。
+- 音频链改为 `master → batGain → batLP → destination`；音频懒加载后首次开启时同步当前电量档。
+- 不强制静默、不强制上浮、不阻断操作、不扣任何东西；耗尽只是更暗更闷，静默时自己回来。
+
+### 约束保持
+
+单文件、无外部资源、不新增色板；tick() 仅增 `updateBattery` / `processNarrative` 两处调用；图鉴与 DS-06 合并同一个覆盖层；解锁日志 kind='quiet' 且每帧最多一条。
+
+---
+
 ## v3 — 2026-10-18 · P6 首次引导 + P9 区段目标 + P8 静默收益
 
 **本轮核心**：「入口清晰 + 有方向 + 有奖励」。不引入资源耗尽惩罚、强制位移、归档拒绝条件、失败结局；未达成时一切操作照常。

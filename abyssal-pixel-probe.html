@@ -17,6 +17,20 @@
      低频确认和弦与叙事日志。
   FIX 深潜渲染：drawMid 的 HADAL 装饰改用 state.W/state.H，修复下潜至
      1000m 后触发的 ReferenceError。
+
+  v2 / R1 音频可达性（本轮）——起因：音频开关存在但用户「没见到 AUDIO」，
+     且开启后听不到任何声音。三处根因分别处理：
+  R1.1 可发现：hints 增加「A 音频」；onKeyDown 新增 A 键切换（键位本身即
+       用户手势，满足自动播放策略）；scheduleOpening 在 7.8s 检查仍静音时
+       写一条 AUD 日志并给 audioBtn 加 .is-attn（两次边框脉冲，播完移除）。
+  R1.2 可确认：新增 Sound.chime()，开启成功后播 659/988Hz 两音，使「点了
+       有没有通电」一秒可判；关闭与失败路径不变。
+  R1.3 可听见：两枚 drone 位于 30–55Hz，笔记本/手机扬声器无法重放，因此
+       开机与静音听感一致。新增 mains-hum 层（triangle 220/196/175/147Hz，
+       随下潜降调，0.0072→0.0044，约比声呐低 15dB），直连 master 并受
+       setQuiet 压到 45%。低频叙事不变，只是补了扬声器能重放的那一段。
+  R1 约束保持：仍单文件、无外部资源、12 色板、Bayer 抖动、tick() 主循环未改动；
+       音频默认关闭；reduced-motion 下 .is-attn 动画关闭。
 -->
 <html lang="zh-CN">
 <head>
@@ -684,6 +698,13 @@ svg{display:block;}
 .ctrl:active{transform:translateY(1px);}
 .ctrl.is-on{border-color:var(--glow);background:rgba(27,74,90,.48);}
 .ctrl.is-on .ctrl-main{color:var(--foam);}
+/* AUDIO 首次引导：两次极慢的边框脉冲，播完即停，不残留动效。 */
+.ctrl.is-attn{border-color:rgba(94,234,212,.55);animation:attn 3.4s steps(1,end) 2;}
+.ctrl.is-attn .ctrl-main{color:var(--glow);}
+@keyframes attn{
+  0%,100%{border-color:rgba(94,234,212,.55);}
+  50%{border-color:rgba(46,125,138,.42);}
+}
 .ctrl[aria-disabled="true"]{opacity:.42;cursor:not-allowed;background:rgba(5,8,13,.7);border-color:var(--hair-dim);}
 .ctrl[aria-disabled="true"]:hover .ctrl-main,
 .ctrl[aria-disabled="true"]:hover .ctrl-cn{color:var(--current);}
@@ -1177,6 +1198,7 @@ svg{display:block;}
   .log-cursor,
   .boot-cursor{animation:none!important;}
   .sig-label.is-on{animation:none!important;}
+  .ctrl.is-attn{animation:none!important;}
   .screen.is-tearing,
   .screen.is-anomaly{animation:none!important;}
   .boot-lines p{opacity:1!important;animation:none!important;}
@@ -1309,6 +1331,7 @@ svg{display:block;}
       <span class="free">MOVE / 照明</span>
       <span><kbd>SPACE</kbd>声呐</span>
       <span><kbd>S</kbd>静默</span>
+      <span><kbd>A</kbd>音频</span>
       <span><kbd>WHEEL</kbd><kbd>↑↓</kbd>深度</span>
       <span><kbd>R</kbd>复位</span>
       <span><kbd>ESC</kbd>取消</span>
@@ -1646,10 +1669,10 @@ svg{display:block;}
      Audio: lazy, low-volume Web Audio ambience. Off by default.
   --------------------------------------------------------------------- */
   const ZONE_AUDIO = {
-    PHOTIC: { cutoff: 220, freqs: [55, 82], noise: 0.18 },
-    TWILIGHT: { cutoff: 120, freqs: [48, 71], noise: 0.14 },
-    ABYSSAL: { cutoff: 80, freqs: [36, 54], noise: 0.10 },
-    HADAL: { cutoff: 55, freqs: [30, 45], noise: 0.05 }
+    PHOTIC: { cutoff: 220, freqs: [55, 82], noise: 0.18, hum: 220, humGain: 0.0072 },
+    TWILIGHT: { cutoff: 120, freqs: [48, 71], noise: 0.14, hum: 196, humGain: 0.0064 },
+    ABYSSAL: { cutoff: 80, freqs: [36, 54], noise: 0.10, hum: 175, humGain: 0.0056 },
+    HADAL: { cutoff: 55, freqs: [30, 45], noise: 0.05, hum: 147, humGain: 0.0044 }
   };
 
   const Sound = {
@@ -1663,6 +1686,7 @@ svg{display:block;}
     noiseGain: null,
     drones: [],
     bioGain: null,
+    hum: null,
 
     build() {
       const AudioCtor = window.AudioContext || window.webkitAudioContext;
@@ -1718,6 +1742,29 @@ svg{display:block;}
           osc.start();
           this.drones.push({ osc, gain });
         });
+
+        // Mains-hum bed: the two drones sit at 30–55Hz, which laptop and phone
+        // speakers physically cannot reproduce — so with audio ON the room
+        // still sounded identical to audio OFF. This mid triangle carries the
+        // audible anchor (about 15dB under the sonar blip) and drops a step in
+        // pitch per zone, so the ON/OFF and the descent are both perceivable.
+        const hum = audio.createOscillator();
+        hum.type = 'triangle';
+        hum.frequency.value = 138;
+        const humGain = audio.createGain();
+        humGain.gain.value = 0;
+        const humSwell = audio.createOscillator();
+        humSwell.type = 'sine';
+        humSwell.frequency.value = 0.041;
+        const humSwellGain = audio.createGain();
+        humSwellGain.gain.value = 0.0016;
+        humSwell.connect(humSwellGain);
+        humSwellGain.connect(humGain.gain);
+        hum.connect(humGain);
+        humGain.connect(master);
+        hum.start();
+        humSwell.start();
+        this.hum = { osc: hum, gain: humGain };
 
         // Quiet-only biological bed: two low sines behind a very slow swell.
         const bioGain = audio.createGain();
@@ -1797,6 +1844,34 @@ svg{display:block;}
       if (this.noiseGain) this.noiseGain.gain.setTargetAtTime(spec.noise, now, ramp);
       this.drones.forEach((drone, index) => {
         drone.osc.frequency.setTargetAtTime(spec.freqs[index] || spec.freqs[0], now, 0.42);
+      });
+      if (this.hum) {
+        this.hum.osc.frequency.setTargetAtTime(spec.hum, now, 0.5);
+        // Quiet mode keeps the hum, just pulled back — it is the only layer
+        // that survives a laptop speaker, so it must not vanish entirely.
+        this.hum.gain.gain.setTargetAtTime(this.quiet ? spec.humGain * 0.45 : spec.humGain, now, ramp);
+      }
+    },
+
+    // Short two-step confirmation so a click on AUDIO is audible proof that
+    // the context really started, not just a label flipping to ON.
+    chime() {
+      if (!this.enabled || !this.ctx || !this.master) return;
+      const audio = this.ctx;
+      const t = audio.currentTime + 0.02;
+      [659.25, 987.77].forEach((frequency, index) => {
+        const osc = audio.createOscillator();
+        const gain = audio.createGain();
+        osc.type = 'triangle';
+        osc.frequency.value = frequency;
+        const at = t + index * 0.09;
+        gain.gain.setValueAtTime(0.0001, at);
+        gain.gain.exponentialRampToValueAtTime(index ? 0.015 : 0.022, at + 0.012);
+        gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.42);
+        osc.connect(gain);
+        gain.connect(this.master);
+        osc.start(at);
+        osc.stop(at + 0.44);
       });
     },
 
@@ -4028,8 +4103,10 @@ svg{display:block;}
         return;
       }
       state.audioEnabled = enabled;
+      dom.audioBtn.classList.remove('is-attn');
       if (enabled) {
         Sound.setQuiet(state.silent);
+        Sound.chime();
         addLog('AUD', '环境音频接入。输出电平 -24 DB。', 'quiet');
       } else {
         addLog('AUD', '环境音频关闭。', 'quiet');
@@ -4128,6 +4205,15 @@ svg{display:block;}
     });
     later(4.9, showCue);
     later(6.6, () => addLog('OPT', '光锥稳定。未校准接触需人工确认。', 'quiet'));
+    // The AUDIO control is a small corner button and defaults to OFF, which
+    // reads as "there is no audio" rather than "audio is muted". Say it out
+    // loud once in the log, and pulse the border twice.
+    later(7.8, () => {
+      if (state.audioEnabled) return;
+      addLog('AUD', '接收器静音。按 A 或点 AUDIO 接入环境声。', 'quiet');
+      dom.audioBtn.classList.add('is-attn');
+      later(7.2, () => dom.audioBtn.classList.remove('is-attn'));
+    });
     later(11.1, () => addLog('SNR', '背景噪声下降。近场存在未分类回波。', 'quiet'));
     later(18, () => hideCue());
   }
@@ -4384,6 +4470,13 @@ svg{display:block;}
       event.preventDefault();
       hideCue();
       toggleSilent();
+      return;
+    }
+    if (key === 'a' || key === 'A') {
+      if (event.repeat) return;
+      event.preventDefault();
+      hideCue();
+      toggleAudio();
       return;
     }
     if (key === 'r' || key === 'R') {

@@ -1,0 +1,47 @@
+# CHANGELOG / 改动记录
+
+按版本记录「做了什么、为什么、涉及哪里」。文件顶部注释块是给模型看的摘要，这里是给人看的历史。
+
+---
+
+## v2 — 2026-10-18 · 音频可达性（R1）
+
+**起因**：v1 交付后用户反馈「没有声音」，且「没见到 AUDIO」。上一轮排查停在「按钮几何可见」，没有闭环。
+
+**根因（三处，均已实测或按信号链算出）**
+
+| # | 问题 | 证据 |
+|---|---|---|
+| R1.1 | 不可发现：AUDIO 是右下 59px 小按钮，默认 OFF，hints 里没有提及 | 1440×900 下 rect = `[1361,806,59,38]`，位于视口最角 |
+| R1.2 | 不可确认：开启成功后只有一行日志，没有任何声音反馈 | `toggleAudio()` 原实现只有 `addLog` + `updateHud` |
+| R1.3 | 不可听见：两枚 drone 在 30–55Hz，且经 lowpass 80Hz | `0.72 × 0.15 × 0.024 ≈ 0.0026`，约 **-52dBFS @ 36Hz**，笔记本扬声器无法重放 |
+
+**改动**
+
+- `hints` 增加「`A` 音频」；`onKeyDown` 新增 A 键切换（键位本身即用户手势，满足自动播放策略）。
+- `scheduleOpening` 在 7.8s 检测仍静音时写 AUD 日志（同时进 `aria-live`），并给 `#audioBtn` 加 `.is-attn`：两次边框脉冲，7.2s 后移除。
+- 新增 `Sound.chime()`：开启成功后播 659.25 / 987.77Hz 两音，使「点了有没有通电」一秒可判。
+- 新增 mains-hum 层：triangle `220 / 196 / 175 / 147Hz` 随分区降调，增益 `0.0072 → 0.0044`，直连 `master`，静默时压到 45%。低频叙事不变，只补了扬声器能重放的那一段。
+- `applyTone()` 负责 hum 的频率与增益；`setQuiet()` 经 `applyTone()` 联动。
+
+**约束保持**：单文件、无外部资源、12 色板、Bayer 抖动、`tick()` 主循环未改动、音频默认关闭、`prefers-reduced-motion` 下 `.is-attn` 动画关闭。
+
+---
+
+## v1 — 2026-10-17 · 初版 + P0–P5
+
+**初版**：按 `SPEC.md` §A 一次成型，单个 HTML，约 4300 行。交付时仅做静态检查（无色板外颜色、无外部资源、结构完整），**未在浏览器中运行**。
+
+**验证**：随后用 headless Edge + CDP 探针跑通，12 张截图；发现下潜至 HADAL（1000m+）时 `drawMid` 抛 `ReferenceError`——早于运行交付，属盲写代价。
+
+**P0–P5**（按 `SPEC.md` §B 实施）
+
+- **P0 音频可用性**：`Sound.toggle()` 在 `resume()` 失败或 `ctx.state !== 'running'` 时返回 `null`；新增 `Sound.ensureRunning()` 处理 bfcache 返回后上下文挂起；失败时保持 OFF 并记录「音频总线不可用」。
+- **P1 深度声景**：`Sound` 保存 lowpass / noiseGain / 两枚 drone 引用；`setZone()` 以 `setTargetAtTime` 切换四层截止频率、基频与噪声；`updateDepth` 与初始化各调用一次。
+- **P2 异常归档**：`state.anomaly.logged`；声呐命中异常时写 alert 日志，雷达保留橙色固定标记（异常结束后不消失）。
+- **P3 静默听感**：`updateSignals` 中 hold 衰减非静默 2.2/s、静默 1.0/s；`setQuiet()` 压低 ambient、lowpass 压到 45Hz、淡入静默生物声层。
+- **P4 深度代价**：`depthPenalty` 乘到 reveal 速度；`lightExposureAt` 深水半径 ×0.9；声呐冷却 1.15s→1.2s；>160M 且无声呐确认的接触先拦截。
+- **P5 全归档事件**：六件归档触发 3s 雷达全环、归档信号闪烁、低频确认和弦与叙事日志。
+- **FIX**：`drawMid` 的 HADAL 装饰改用 `state.W/state.H`，修掉上述 `ReferenceError`。
+
+**遗留**：音频可用性只在参数层验证，未做人工听感测试——v2 的 R1 即由此而来。

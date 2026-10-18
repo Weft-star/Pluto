@@ -132,16 +132,36 @@
     点击任意处（window pointerdown capture，不阻断游戏输入）或 Esc 关闭，
     8s 自动淡出；不捕获键盘、不遮挡 .ops；reduced-motion 无淡入。
   P21.2 档案池：
-    11 条（WRK 3 / RUN 2 / ORG 2 / ECH 2 / VNT 2），文案按工单原文；
-    每个信号点由 seed（sig.phase）决定绑定条目（pickArchiveKey），归档成功时
-    若该条未解锁 → 解锁 + 弹框；同一信号不重复弹（sig.archiveShown），
-    不同信号可能绑同一条（先到先解锁）。
+    26 条（WRK 18 / RUN 2 / ORG 2 / ECH 2 / VNT 2），文案按工单原文（含追加扩充：
+    沉船时间跨度公元前 600 年—2031 年，地域覆盖地中海/北海/南海/印度洋/加勒比/
+    太平洋/北冰洋；超自然只做「记录里的一处对不上」，评论只陈述事实与数字，
+    反讽由描述与评论的关系产生）。每个信号点由 seed（sig.phase）决定绑定条目
+    （pickArchiveKey），归档成功时若该条未解锁 → 解锁 + 弹框；同一信号不重复弹
+    （sig.archiveShown），不同信号可能绑同一条（先到先解锁）。
   P21.3 图鉴存档：
     覆盖层新增第四标签「信号档案」：按类型分组，已解锁显示三段全文，
     未解锁「◇ 尚未解锁」，顶部「已解锁 N / 11」，全解锁底部收束行。
     持久化 'abyssal.sigarchives.v1'。
   P21.4 边界：不影响任何玩法数值，不参与 sectionArchived；与 DS-06 / P20 互不
     混用；不新增色板、不新增 canvas 层、不改变信号绘制。
+
+  v8 / P20 深渊发现物 —— 深海里有东西，且东西有话说
+  场景级静态发现物 9 种（人类遗迹 4 + 克系异常 5），不进入 state.signals、
+    不可归档、不参与声呐命中/sectionArchived/事件池。沉船不在其中（WRK 走 P21）；
+    RUIN-S 是「什么也不发」的纯遗迹，与 RUN 信号区分。
+  显形与触发：初始 1–2px 轮廓；lightExposureAt>0.15 时 reveal 随 exposure 上升
+    （人类 0.3/s、克系 0.18/s，Bayer 门控）；光标距离 <25px 且 reveal>0.7 自动弹
+    P21 知识框组件（不点击、不新增操作）。弹后保留场景作暗标记不再触发。
+  每次下潜最多 1 个：进新 zone 时从未发现池按权重掷骰（STRUCT-S/STILL-0 权重
+    0.35 最低），'abyssal.discovery.v1' 记录已发现（全流程一次）。
+  绘制：drawMid 内（drawSignals 之前），每发现物 ≤60 个 1px 点，受光换色；
+    克系组反射/抖动效果 reduced-motion 下关闭。
+  图鉴第五标签「深渊发现物」：人类遗迹/克系异常两组，未发现「??? · 尚未发现」，
+    顶部「已发现 N / 9」，全发现尾行「还有更多。但仪器已经不敢记录了。」
+  DS-06 联动：发现任意克系异常体 → narrative.special=true（持久化，不占 13 条），
+    DS-06 页底部追加特殊记录 + 一条 ◇ 日志。
+  涉及：DISCOVERY_DEFS、loadDiscoveries、rollDiscovery、drawFinding、
+    unlockFindingSpecial、renderDiscoveryPane、updateDepth、init、resetProbe。
 -->
 <html lang="zh-CN">
 <head>
@@ -1757,6 +1777,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
         <div class="codex-tabs" role="tablist" aria-label="档案标签页">
           <button class="codex-tab is-on" id="codexTabLog" type="button" role="tab" aria-selected="true">图鉴</button>
           <button class="codex-tab" id="codexTabArchive" type="button" role="tab" aria-selected="false">信号档案</button>
+          <button class="codex-tab" id="codexTabFindings" type="button" role="tab" aria-selected="false">深渊发现物</button>
           <button class="codex-tab" id="codexTabDossier" type="button" role="tab" aria-selected="false">DS-06 档案</button>
           <button class="codex-tab" id="codexTabSettings" type="button" role="tab" aria-selected="false">设置</button>
         </div>
@@ -1764,6 +1785,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
       </header>
       <div class="codex-body" id="codexPaneLog" role="tabpanel" aria-label="图鉴"></div>
       <div class="codex-body" id="codexPaneArchive" role="tabpanel" aria-label="信号档案" hidden></div>
+      <div class="codex-body" id="codexPaneFindings" role="tabpanel" aria-label="深渊发现物" hidden></div>
       <div class="codex-body" id="codexPaneDossier" role="tabpanel" aria-label="DS-06 档案" hidden></div>
       <div class="codex-body" id="codexPaneSettings" role="tabpanel" aria-label="设置" hidden></div>
     </div>
@@ -2058,11 +2080,13 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     codexPanel: document.querySelector('.codex-panel'),
     codexTabLog: $('#codexTabLog'),
     codexTabArchive: $('#codexTabArchive'),
+    codexTabFindings: $('#codexTabFindings'),
     codexTabDossier: $('#codexTabDossier'),
     codexTabSettings: $('#codexTabSettings'),
     codexClose: $('#codexClose'),
     codexPaneLog: $('#codexPaneLog'),
     codexPaneArchive: $('#codexPaneArchive'),
+    codexPaneFindings: $('#codexPaneFindings'),
     codexPaneDossier: $('#codexPaneDossier'),
     codexPaneSettings: $('#codexPaneSettings'),
     codexBtn: $('#codexBtn'),
@@ -2110,7 +2134,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     sectionTarget: 6, sectionArchived: 0, sectionDone: false,
     silentBonusTimer: 0,
     codex: { types: {}, maxDepth: 688, silentFinds: 0, total: 0 },
-    narrative: { unlocked: [], anomalyCount: 0, final: false },
+    narrative: { unlocked: [], anomalyCount: 0, final: false, special: false },
     narrativeQueue: [], narrativeFinaleScheduled: false,
     depthVelocity: 0, prevDepth: START_DEPTH, bgScroll: 0,
     depthTickMark: Math.floor(START_DEPTH / 50),
@@ -2125,6 +2149,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     hudFrozenUntil: -1, p15GaugeRecovered: 5,
     turbidity: 1, tempBoost: 0, subsonicFlashUntil: -1, shadowField: null, bgScrollX: 0,
     sigArchives: { unlocked: [] }, knowledgeOpen: false,
+    discoveries: [], discovery: null, diveFindingUsed: false, findingRolledZones: {},
     battery: 100, batteryBand: 'ok',
     particleBand: Math.floor(START_DEPTH / 100),
     tutorial: {
@@ -3844,6 +3869,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     drawSeaLife(now);
     drawMigration(now);
     drawEruption(now);
+    drawFinding(now);
   }
 
   /* ---------------------------------------------------------------------
@@ -5083,21 +5109,45 @@ body.tut-active .hud .intro-cue{opacity:.35;}
      that P20 (abyssal findings) will reuse later.
   --------------------------------------------------------------------- */
   const SIG_ARCHIVE_POOL = [
-    { key: 'WRK-0', code: 'WRK', text: '1957 年，一艘运输导弹的货轮在这片海域失踪。船体编号与档案相符，货舱清单显示船上载有十二枚导弹。', quote: '看来深海有过一次自己的判断。' },
-    { key: 'WRK-1', code: 'WRK', text: '1944 年，一艘潜艇在执行秘密任务时消失。船上有一份从未送达的停战协议，签署日期比广岛早了十一天。', quote: '差十一天。有人不希望它送到。' },
-    { key: 'WRK-2', code: 'WRK', text: '1962 年 10 月，一艘苏联货船在古巴海域失踪。货舱清单写着特殊货物，残骸被找到时货舱是空的，舱门从内侧锁死。', quote: '人类离毁灭最近的时候，深海替我们按住了按钮。' },
-    { key: 'RUN-0', code: 'RUN', text: '石柱上的刻痕与已知文明的任何文字都不匹配。柱身的放射性衰变痕迹指向公元前 3000 年。', quote: '我们以为核能是二十世纪的发明。' },
-    { key: 'RUN-1', code: 'RUN', text: '遗迹内部有规律的敲击声，间隔 7 秒。翻译出来是：别挖太深。', quote: '有人在里面待过很久。' },
-    { key: 'ORG-0', code: 'ORG', text: '该生物体内检测到不属于地球同位素比例的元素。它只在核试验海域附近出现，不迁徙，只是在那里等着。', quote: '它们记得每一次爆炸。' },
-    { key: 'ORG-1', code: 'ORG', text: '这种生物在光照下不逃逸。它只是看着。检测显示它的眼睛对可见光的响应范围比人类宽三倍。', quote: '它看见的比我们多。' },
-    { key: 'ECH-0', code: 'ECH', text: '该回响的频率与 1945 年 8 月 6 日的电磁脉冲吻合。声呐捕捉到一段摩尔斯电码，翻译出来只有一个字：停。', quote: '有些声音永远不会停止。' },
-    { key: 'ECH-1', code: 'ECH', text: '回响的间隔在缩短，每次约 0.3 秒。按此速度，它会在某一次变成零。', quote: '它在靠近。' },
-    { key: 'VNT-0', code: 'VNT', text: '喷口附近的沉积物含有高浓度稀有金属。1950 年代曾有一支秘密勘探队在此作业，没有留下返回记录。', quote: '他们没有回来。热液还在冒。' },
-    { key: 'VNT-1', code: 'VNT', text: '热液脉动的节奏与人类心跳接近。1970 年代的一份档案称此处为有生命的海底，档案被封存了。', quote: '海底有东西在呼吸。' }
+    // —— 沉船（WRK）18 条：公元前到近未来，评论只陈述事实与数字 ——
+    { key: 'WRK-0', zone: 'PHOTIC', code: 'WRK', text: '一艘腓尼基商船在地中海西部沉没，约公元前 600 年。陶片上刻着“不要往西”。那年腓尼基人正在和希腊人争海权，船上有一批给战船用的紫铜。', quote: '紫铜没到船坞。前线少了一批桨。' },
+    { key: 'WRK-1', zone: 'PHOTIC', code: 'WRK', text: '一艘罗马运粮船在风暴中失踪，约公元前 214 年，船上三百吨军粮。那年罗马正在打坎尼战役，这批粮是给前线的。', quote: '军粮没送到。前线撑了三个月。' },
+    { key: 'WRK-2', zone: 'PHOTIC', code: 'WRK', text: '一艘汉代商船在南海沉没，约公元 100 年，货舱里有丝绸、漆器和五铢钱。舱底木板刻着“见海如见君”，朝向船尾。那年汉朝正在和匈奴交战。', quote: '话留下了。人没回去。' },
+    { key: 'WRK-3', zone: 'PHOTIC', code: 'WRK', text: '一艘唐代商船在南海沉没，约公元 750 年。清单上一件标注“不可碎”的货物用铅匣封存。那年安史之乱前三年，船上有批军械。', quote: '铅匣是空的。军械一件不少。' },
+    { key: 'WRK-4', zone: 'TWILIGHT', code: 'WRK', text: '一艘维京葬船被放入海中，约公元 890 年，船上有九名战士和一副石质棋具。按习俗船应被点燃，残骸上没有火烧痕迹，棋具少了一枚棋子。', quote: '船没烧。棋子少一枚。' },
+    { key: 'WRK-5', zone: 'TWILIGHT', code: 'WRK', text: '一艘宋代商船在印度洋沉没，约公元 1120 年，船上有瓷器、铜钱和一本航海日志。最后一页写着“星图不对”，之后全是空白，纸上有指甲划过的压痕。那年宋金正在交战。', quote: '压痕在空白页上。页数对得上。' },
+    { key: 'WRK-6', zone: 'TWILIGHT', code: 'WRK', text: '一艘西班牙运金船在加勒比海失踪，约 1588 年，金币是清单上的三倍。多出来的金币铸造年份比沉船晚了六十年。那年无敌舰队正准备远征英国。', quote: '金币总数三倍。铸造年份晚六十年。' },
+    { key: 'WRK-7', zone: 'TWILIGHT', code: 'WRK', text: '一艘海盗船在加勒比沉没，约 1715 年，残骸里只有一箱航海图，标着一条不存在的航线。航线终点只写了两个字：此处。', quote: '图上的航线不在任何海图上。终点有字。' },
+    { key: 'WRK-8', zone: 'TWILIGHT', code: 'WRK', text: '一艘载着爱尔兰移民的船在北大西洋沉没，约 1850 年。行李箱全部打开，衣物整齐叠放。救生艇还在原位，绳结没有解开过。那年爱尔兰大饥荒，船上的人是在逃荒。', quote: '行李箱都开着。救生艇没动。' },
+    { key: 'WRK-9', zone: 'ABYSSAL', code: 'WRK', text: '一艘协约国医疗船在北海沉没，约 1916 年，船身红十字至今清晰。47 具遗体，名单上有 48 个名字。多出来的那个名字，登记日期比船沉晚了两天。', quote: '名单四十八人。遗体四十七具。' },
+    { key: 'WRK-10', zone: 'ABYSSAL', code: 'WRK', text: '一艘运兵船在英吉利海峡沉没，约 1917 年，船上一千二百名士兵和一封未寄出的家书。信被找到时是干的，盐渍成分不是海盐。', quote: '信是干的。盐渍不是海盐。' },
+    { key: 'WRK-11', zone: 'ABYSSAL', code: 'WRK', text: '一艘日本潜艇在太平洋失踪，约 1944 年，船上有一份从未送达的停战提议，签署日期比广岛早了十一天。文件装在铅制防水筒里，筒身有辐射痕迹。', quote: '筒身有辐射痕迹。签署日期早十一天。' },
+    { key: 'WRK-12', zone: 'ABYSSAL', code: 'WRK', text: '一艘运送红十字物资的商船在北大西洋沉没，约 1942 年。药品全部完好，生产日期却比沉船晚三年。', quote: '药品完好。生产日期晚三年。' },
+    { key: 'WRK-13', zone: 'ABYSSAL', code: 'WRK', text: '一艘苏联监听船在古巴海域失踪，约 1962 年，船上有一套深海声学设备。设备还在运转，录音带已经满了。那年十月，人类离核战争只有一次按键。', quote: '录音带满了。里面没有声呐脉冲。' },
+    { key: 'WRK-14', zone: 'HADAL', code: 'WRK', text: '一艘科考船在大西洋失踪，约 1970 年，研究项目是“长时间隔离对意识的影响”。日志最后一页写着“它回答了”。实验对象名单十二人，睡眠舱十三张床。', quote: '名单十二人。睡眠舱十三张。' },
+    { key: 'WRK-15', zone: 'HADAL', code: 'WRK', text: '一艘北冰洋科考船在冰层下失联，约 1989 年，最后无线电是 41 秒录音，全是同一频率的脉冲。残骸里的录音机还在转，磁带是空的。那年冷战刚结束，船上的研究经费来自军方。', quote: '录音机在转。磁带是空的。' },
+    { key: 'WRK-16', zone: 'HADAL', code: 'WRK', text: '一艘深海科考船在马里亚纳海沟失踪，约 2015 年，项目是“深渊感知”，测试人在绝对黑暗中是否会产生被注视感。所有实验对象反馈完全一致。那年全球有七场局部战争在进行。', quote: '十二份反馈。措辞完全一致。' },
+    { key: 'WRK-17', zone: 'HADAL', code: 'WRK', text: '一艘无人货运船在太平洋失联，约 2031 年，船上载着 2000 台家用机器人。残骸被找到时，机器人排列整齐，全部面向船头方向。船头正对一片没有海底的深渊。', quote: '机器人全部开机。面朝同一方向。' },
+    // —— 遗迹（RUN）2 条 ——
+    { key: 'RUN-0', zone: 'HADAL', code: 'RUN', text: '石柱上的刻痕与已知文明的任何文字都不匹配。柱身的放射性衰变痕迹指向公元前 3000 年。那个年代不该有核裂变产物。', quote: '我们以为核能是二十世纪的发明。' },
+    { key: 'RUN-1', zone: 'HADAL', code: 'RUN', text: '遗迹内部有规律的敲击声，间隔 7 秒。声纹分析显示敲击来自石柱内部，但石柱是实心的。翻译出来是三个字：别挖太深。', quote: '有人在里面待过很久。' },
+    // —— 生物（ORG）2 条 ——
+    { key: 'ORG-0', zone: 'ABYSSAL', code: 'ORG', text: '该生物体内检测到不属于地球同位素比例的元素。它只在核试验海域附近出现，不迁徙，只是在那里等着。周围没有食物链。', quote: '它们记得每一次爆炸。' },
+    { key: 'ORG-1', zone: 'HADAL', code: 'ORG', text: '这种生物在光照下不逃逸。它只是看着。检测显示它的眼睛对可见光的响应范围比人类宽三倍，对绝对黑暗的响应范围为——无穷。', quote: '它看见的比我们多。' },
+    // —— 异常（ECH）2 条 ——
+    { key: 'ECH-0', zone: 'HADAL', code: 'ECH', text: '该回响的频率与 1945 年一次大气层核试验的电磁脉冲吻合。声呐捕捉到一段摩尔斯电码，翻译出来只有一个字：停。发送方不在任何已知名单上。', quote: '有些声音永远不会停止。' },
+    { key: 'ECH-1', zone: 'HADAL', code: 'ECH', text: '回响的间隔在缩短，每次约 0.3 秒。按此速度，它会在某一次变成零。声呐记录到倒计时，但倒计时的起点在录音之前。', quote: '它在靠近。或者我们在靠近。' },
+    // —— 热液（VNT）2 条 ——
+    { key: 'VNT-0', zone: 'ABYSSAL', code: 'VNT', text: '喷口附近的沉积物含有高浓度稀有金属。1950 年代曾有一支秘密勘探队在此作业，没有留下返回记录。他们的装备在喷口边缘被找到，整齐摆放。', quote: '他们没有回来。热液还在冒。' },
+    { key: 'VNT-1', zone: 'ABYSSAL', code: 'VNT', text: '热液脉动的节奏与人类心跳接近。1970 年代的一份档案称此处为“有生命的海底”，档案被封存。封存原因栏只写了两个字：自保。', quote: '海底有东西在呼吸。' }
   ];
 
   function pickArchiveKey(sig) {
-    const pool = SIG_ARCHIVE_POOL.filter((item) => item.code === sig.type.code);
+    // P21.2 分层：条目按深度带放置，信号用生成时所在 zone 的子池。
+    const byZone = SIG_ARCHIVE_POOL.filter((item) =>
+      item.code === sig.type.code && item.zone === state.zone.id);
+    const byCode = SIG_ARCHIVE_POOL.filter((item) => item.code === sig.type.code);
+    const pool = byZone.length ? byZone : byCode;
     if (!pool.length) return null;
     const seed = hash(sig.phase * 2.3 + sig.id * 0.77);
     return pool[Math.floor(seed * pool.length) % pool.length].key;
@@ -5169,7 +5219,8 @@ body.tut-active .hud .intro-cue{opacity:.35;}
           quote.textContent = '「' + record.quote + '」';
           item.appendChild(quote);
         } else {
-          item.textContent = '◇ 尚未解锁';
+          const zoneDef = ZONES.find((zone) => zone.id === record.zone);
+          item.textContent = '◇ 尚未解锁 · 出现在' + (zoneDef ? zoneDef.cn : '深海');
         }
         pane.appendChild(item);
       }
@@ -5178,6 +5229,277 @@ body.tut-active .hud .intro-cue{opacity:.35;}
       const tail = document.createElement('div');
       tail.className = 'dossier-item is-final';
       tail.textContent = '深海里还有更多被藏起来的事。';
+      pane.appendChild(tail);
+    }
+  }
+
+  /* ---------------------------------------------------------------------
+     P20: abyssal findings. Scene-level static objects — the beam reveals
+     them, proximity speaks for them. Not signals, not archivable.
+  --------------------------------------------------------------------- */
+  const DISCOVERY_KEY = 'abyssal.discovery.v1';
+  const DISCOVERY_DEFS = [
+    // —— 人类遗迹组：这是什么、什么年代、什么细节 ——
+    { id: 'RUIN-S', group: 'human', label: '遗迹柱群 · RUIN-S', zones: ['ABYSSAL', 'HADAL'], depth: [800, 1400], weight: 1,
+      text: '石柱的朝向不一致，没有一根对准同一个方向。柱身刻痕与已知文明的任何文字都不匹配。放射性衰变痕迹指向公元前 3000 年。',
+      quote: '「它们不是一起立起来的。」' },
+    { id: 'BONE-S', group: 'human', label: '巨大骨架 · BONE-S', zones: ['TWILIGHT', 'ABYSSAL'], depth: [400, 1000], weight: 1,
+      text: '骨架体积超出已知物种。肋骨间距均匀得不自然，误差小于 0.1 毫米。骨骼材质不是钙，是某种金属。',
+      quote: '「它不是长成这样的。它是被摆成这样的。」' },
+    { id: 'STRUCT-S', group: 'human', label: '不明构造物 · STRUCT-S', zones: ['PHOTIC', 'TWILIGHT', 'ABYSSAL', 'HADAL'], depth: [600, 1400], weight: 0.35,
+      text: '几何精度超出自然形成。圆环的圆心在声呐上不产生回波，像是空的。构造物内部的低频脉冲周期为 7 秒，与任何已知地质活动无关。',
+      quote: '「圆心是空的。但脉冲从圆心出来。」' },
+    { id: 'FALL-S', group: 'human', label: '坠落物 · FALL-S', zones: ['PHOTIC', 'TWILIGHT'], depth: [100, 600], weight: 1,
+      text: '人造物。编号部分可辨：DS-0…。与 DS-06 的编号格式一致，但不属于 DS-06 的记录。',
+      quote: '「还有别的探测器来过。它们没有留下记录。」' },
+    // —— 克系异常组：读数为什么不对 ——
+    { id: 'GEO-0', group: 'eldritch', label: '几何体 · GEO-0', zones: ['ABYSSAL', 'HADAL'], depth: [900, 1400], weight: 1,
+      text: '表面反射的不是周围景象。声呐穿过去，没有回波。温度计显示周围水温，热成像显示该物体为绝对零度。',
+      quote: '「它不在我们这边。」' },
+    { id: 'DOOR-0', group: 'eldritch', label: '垂直裂缝 · DOOR-0', zones: ['HADAL'], depth: [1000, 1400], weight: 1,
+      text: '裂缝内部光谱读数与周围水体一致，但没有任何光子返回。声呐进入后没有回波，也没有被吸收——信号只是消失了。深度计在裂缝边缘读数正常。',
+      quote: '「门后面没有东西。连没有都没有。」' },
+    { id: 'INV-0', group: 'eldritch', label: '异常骨骼 · INV-0', zones: ['ABYSSAL', 'HADAL'], depth: [800, 1400], weight: 1,
+      text: '骨骼材质是金属，元素分析不属于地球同位素比例。骨骼朝向与沉积物层理相反——它是在沉积物形成之后被放进去的。',
+      quote: '「它不是沉下来的。它是被放进去的。」' },
+    { id: 'ECHO-0', group: 'eldritch', label: '回声空洞 · ECHO-0', zones: ['HADAL'], depth: [1000, 1400], weight: 1,
+      text: '声呐进入该区域后返回的信号与本次脉冲不匹配。回波频率与三年前一次未记录的声呐发射吻合。那次发射不在任何日志里。',
+      quote: '「它记得我们没有发过的信号。」' },
+    { id: 'STILL-0', group: 'eldritch', label: '静止区域 · STILL-0', zones: ['PHOTIC', 'TWILIGHT', 'ABYSSAL', 'HADAL'], depth: [600, 1400], weight: 0.35,
+      text: '该区域内的粒子在 41 秒内完全静止，不随水流移动，不受光锥影响。温度、盐度、压力读数全部正常。41 秒后粒子同时恢复，没有过渡。',
+      quote: '「41 秒。和那段录音一样长。」' }
+  ];
+
+  function loadDiscoveries() {
+    const seen = loadStore(DISCOVERY_KEY, null);
+    if (Array.isArray(seen)) {
+      const valid = new Set(DISCOVERY_DEFS.map((item) => item.id));
+      state.discoveries = seen.filter((id) => typeof id === 'string' && valid.has(id));
+    }
+  }
+
+  // 每次下潜最多 1 个；进入新 zone 时从未发现池按权重掷骰一次。
+  function rollDiscovery(zone) {
+    if (state.discovery || state.diveFindingUsed) return;
+    if (state.findingRolledZones[zone.id]) return;
+    state.findingRolledZones[zone.id] = true;
+    if (Math.random() > 0.6) return;
+    const pool = DISCOVERY_DEFS.filter((def) =>
+      def.zones.indexOf(zone.id) !== -1 &&
+      state.depth >= def.depth[0] && state.depth <= def.depth[1] &&
+      state.discoveries.indexOf(def.id) === -1);
+    if (!pool.length) return;
+    const total = pool.reduce((sum, def) => sum + def.weight, 0);
+    let pick = Math.random() * total;
+    let def = pool[pool.length - 1];
+    for (const candidate of pool) {
+      pick -= candidate.weight;
+      if (pick <= 0) { def = candidate; break; }
+    }
+    state.discovery = {
+      id: def.id,
+      x: 0.18 + Math.random() * 0.64,
+      y: 0.36 + Math.random() * 0.38,
+      reveal: 0.08,
+      shown: false,
+      lastNow: undefined
+    };
+    state.diveFindingUsed = true;
+  }
+
+  function findingRevealRate(def) {
+    return def.group === 'eldritch' ? 0.18 : 0.3;
+  }
+
+  function drawFinding(now) {
+    if (!state.arms || !state.discovery) return;
+    const finding = state.discovery;
+    const def = DISCOVERY_DEFS.find((item) => item.id === finding.id);
+    if (!def) return;
+    const cx = finding.x * state.W;
+    const cy = finding.y * state.H;
+    const exposure = lightExposureAt(cx, cy);
+    const target = exposure > 0.15 ? clamp(0.15 + exposure, 0, 1) : 0.08;
+    const last = finding.lastNow === undefined ? now : finding.lastNow;
+    const dt = clamp(now - last, 0, 0.2);
+    finding.lastNow = now;
+    if (state.reduced) finding.reveal = target > finding.reveal ? target : finding.reveal;
+    else finding.reveal += (target - finding.reveal) * Math.min(1, dt * findingRevealRate(def) * 2);
+    finding.reveal = clamp(finding.reveal, 0.08, 1);
+    if (exposure > 0.15 && finding.reveal < 0.12) finding.reveal = 0.12;
+
+    // 触发：靠近且足够可见。弹过即静默，轮廓变暗留作标记。
+    if (!finding.shown && state.pointer.inside && finding.reveal > 0.7 &&
+        Math.hypot(state.pointer.sceneX - cx, state.pointer.sceneY - cy) < 25) {
+      finding.shown = true;
+      if (state.discoveries.indexOf(def.id) === -1) {
+        state.discoveries.push(def.id);
+        saveStore(DISCOVERY_KEY, state.discoveries);
+      }
+      showKnowledgeBox(def.label, def.text, def.quote);
+      if (def.group === 'eldritch') unlockFindingSpecial();
+      if (state.codexOpen && !dom.codexPaneFindings.hidden) renderDiscoveryPane();
+    }
+
+    const lit = exposure > 0.2;
+    const found = finding.shown;
+    const px = Math.round(cx);
+    const py = Math.round(cy);
+    const pixel = (x, y, color) => {
+      const qx = Math.round(x);
+      const qy = Math.round(y);
+      if (qx < 0 || qy < 0 || qx >= state.W || qy >= state.H) return;
+      if (bayer(qx + 7, qy + 3) > 0.08 + finding.reveal * 0.92) return;
+      ctx.fillStyle = color;
+      ctx.fillRect(qx, qy, 1, 1);
+    };
+    const edge = found ? C.deep : lit ? C.shelf : C.deep;
+    const mark = lit ? C.current : C.shelf;
+
+    if (def.id === 'RUIN-S') {
+      const pillars = 3 + Math.floor(hash(finding.x * 91) * 3);
+      for (let p = 0; p < pillars; p++) {
+        const bx = px - 7 + p * 5;
+        const tall = 6 + Math.floor(hash(finding.y * 37 + p) * 5);
+        for (let i = 0; i < tall; i++) pixel(bx, py - i, i === 0 ? edge : C.void);
+        pixel(bx, py - tall, lit ? C.glow : C.shelf);
+        if (p % 2 === 0) pixel(bx + 1, py - Math.floor(tall * 0.5), C.void);
+      }
+      for (let i = -7; i <= 7; i += 2) pixel(px + i, py - 10, edge);
+    } else if (def.id === 'BONE-S') {
+      const spine = 16 + Math.floor(hash(finding.x * 53) * 9);
+      for (let i = 0; i < spine; i++) pixel(px - spine / 2 + i, py, lit ? C.deep : C.void);
+      const pairs = 6 + Math.floor(hash(finding.y * 71) * 3);
+      for (let r = 0; r < pairs; r++) {
+        const rx = px - spine / 2 + Math.round((r + 1) * spine / (pairs + 1));
+        const len = 3 + Math.floor(hash(finding.x * 13 + r) * 3);
+        for (let j = 1; j <= len; j++) {
+          pixel(rx - j, py + j, lit ? C.shelf : C.void);
+          pixel(rx + j, py + j, lit ? C.shelf : C.void);
+        }
+      }
+    } else if (def.id === 'STRUCT-S') {
+      const radius = 6 + Math.floor(hash(finding.x * 29) * 4);
+      const steps = Math.max(22, Math.ceil(TAU * radius));
+      for (let i = 0; i < steps; i++) {
+        const a = i / steps * TAU;
+        if (hash(finding.y * 17 + i) < 0.12) continue;
+        pixel(px + Math.cos(a) * radius, py + Math.sin(a) * radius * 0.85, lit ? C.current : C.void);
+      }
+      for (let i = 0; i < 2; i++) {
+        const a = hash(finding.x * 7 + i) * TAU;
+        pixel(px + Math.cos(a) * radius, py + Math.sin(a) * radius * 0.85, C.alert);
+      }
+    } else if (def.id === 'FALL-S') {
+      const length = 8 + Math.floor(hash(finding.x * 41) * 5);
+      for (let i = 0; i < length; i++) {
+        pixel(px - length / 2 + i, py - Math.round(i * 0.35), lit ? C.current : C.void);
+      }
+      pixel(px + length / 2, py - Math.round(length * 0.35), lit ? C.alert : C.void);
+      for (let i = 0; i < 4; i++) {
+        pixel(px + 3 + i * 2, py + 2 + Math.floor(hash(finding.y * 7 + i) * 3), lit ? C.shelf : C.void);
+      }
+    } else if (def.id === 'GEO-0') {
+      const radius = 6 + Math.floor(hash(finding.x * 61) * 3);
+      const sides = 6;
+      for (let i = 0; i <= sides; i++) {
+        const a0 = i / sides * TAU + 0.3;
+        const a1 = (i + 1) / sides * TAU + 0.3;
+        const steps = Math.max(3, Math.ceil(radius * 0.8));
+        for (let s = 0; s <= steps; s++) {
+          const a = a0 + (a1 - a0) * s / steps;
+          pixel(px + Math.cos(a) * radius, py + Math.sin(a) * radius, lit ? C.current : C.void);
+        }
+      }
+      if (!state.reduced) pixel(px + Math.cos(now * 1.7) * radius * 0.5, py + Math.sin(now * 1.3) * radius * 0.5, lit ? C.glow : C.current);
+    } else if (def.id === 'DOOR-0') {
+      const width = 3;
+      const height = 11 + Math.floor(hash(finding.y * 43) * 5);
+      for (let j = 0; j < height; j++) {
+        pixel(px - width, py - j, lit ? C.current : C.void);
+        pixel(px + width, py - j, lit ? C.current : C.void);
+      }
+      for (let i = -width; i <= width; i++) pixel(px + i, py - height, lit ? C.current : C.void);
+    } else if (def.id === 'INV-0') {
+      const spine = 14 + Math.floor(hash(finding.x * 67) * 7);
+      for (let i = 0; i < spine; i++) pixel(px - spine / 2 + i, py - Math.round(Math.sin(i / spine * Math.PI) * 2), C.void);
+      const pairs = 5 + Math.floor(hash(finding.y * 23) * 3);
+      for (let r = 0; r < pairs; r++) {
+        const rx = px - spine / 2 + Math.round((r + 1) * spine / (pairs + 1));
+        for (let j = 1; j <= 3; j++) {
+          pixel(rx, py - j, lit ? C.shelf : C.void);
+        }
+      }
+      pixel(px - spine / 2 - 2, py, lit ? C.shelf : C.void);
+      pixel(px + spine / 2 + 2, py, lit ? C.shelf : C.void);
+    } else if (def.id === 'ECHO-0') {
+      const radius = 5 + Math.floor(hash(finding.x * 83) * 3);
+      const steps = Math.max(26, Math.ceil(TAU * radius));
+      for (let i = 0; i < steps; i++) {
+        const a = i / steps * TAU;
+        const jitter = state.reduced ? 0 : Math.sin(now * 6 + i) > 0.4 ? 1 : 0;
+        pixel(px + Math.cos(a) * (radius + jitter), py + Math.sin(a) * (radius + jitter) * 0.9, lit ? C.alert : C.void);
+      }
+    } else if (def.id === 'STILL-0') {
+      const radius = 5 + Math.floor(hash(finding.y * 97) * 3);
+      const steps = Math.max(22, Math.ceil(TAU * radius));
+      for (let i = 0; i < steps; i++) {
+        const a = i / steps * TAU;
+        const jitter = state.reduced ? 0 : Math.sin(now * 4 + i * 2) > 0.5 ? 1 : 0;
+        pixel(px + Math.cos(a) * (radius + jitter), py + Math.sin(a) * (radius + jitter), lit ? C.current : C.void);
+      }
+      if (!state.reduced) pixel(px, py, lit ? C.deep : C.void);
+    }
+    // 已发现的作为暗标记留驻：中心一枚暗点。
+    if (found) pixel(px, py, C.deep);
+  }
+
+  function unlockFindingSpecial() {
+    if (state.narrative.special) return;
+    state.narrative.special = true;
+    saveStore(DS06_KEY, state.narrative);
+    addLog('ARC', '◇ DS-06 记录：那个东西不该在这里。我关掉了声呐。它还是回了一声。', 'quiet');
+    if (state.codexOpen && !dom.codexPaneDossier.hidden) renderCodexPanes();
+  }
+
+  function renderDiscoveryPane() {
+    const pane = dom.codexPaneFindings;
+    if (!pane) return;
+    pane.textContent = '';
+    const counter = document.createElement('div');
+    counter.className = 'codex-meta';
+    counter.style.margin = '0 0 6px';
+    counter.style.borderTop = '0';
+    counter.style.paddingTop = '0';
+    counter.textContent = '已发现 ' + state.discoveries.length + ' / ' + DISCOVERY_DEFS.length;
+    pane.appendChild(counter);
+    const groups = [['human', '人类遗迹'], ['eldritch', '克系异常']];
+    for (const [group, title] of groups) {
+      const heading = document.createElement('div');
+      heading.className = 'codex-group-title';
+      heading.textContent = title;
+      pane.appendChild(heading);
+      for (const def of DISCOVERY_DEFS) {
+        if (def.group !== group) continue;
+        const found = state.discoveries.indexOf(def.id) !== -1;
+        const item = document.createElement('div');
+        item.className = 'dossier-item' + (found ? '' : ' is-locked');
+        if (found) {
+          item.textContent = def.text;
+          const quote = document.createElement('div');
+          quote.className = 'kb-quote';
+          quote.textContent = def.quote;
+          item.appendChild(quote);
+        } else {
+          item.textContent = '??? · 尚未发现';
+        }
+        pane.appendChild(item);
+      }
+    }
+    if (state.discoveries.length >= DISCOVERY_DEFS.length) {
+      const tail = document.createElement('div');
+      tail.className = 'dossier-item is-final';
+      tail.textContent = '还有更多。但仪器已经不敢记录了。';
       pane.appendChild(tail);
     }
   }
@@ -5247,6 +5569,12 @@ body.tut-active .hud .intro-cue{opacity:.35;}
         dossier.appendChild(item);
       }
     }
+    if (state.narrative.special) {
+      const specialItem = document.createElement('div');
+      specialItem.className = 'dossier-item is-final';
+      specialItem.textContent = 'DS-06 记录：那个东西不该在这里。我关掉了声呐。它还是回了一声。';
+      dossier.appendChild(specialItem);
+    }
     if (state.narrative.final) {
       const finalItem = document.createElement('div');
       finalItem.className = 'dossier-item is-final';
@@ -5289,6 +5617,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     const tabs = [
       ['log', dom.codexTabLog, dom.codexPaneLog],
       ['archive', dom.codexTabArchive, dom.codexPaneArchive],
+      ['findings', dom.codexTabFindings, dom.codexPaneFindings],
       ['dossier', dom.codexTabDossier, dom.codexPaneDossier],
       ['settings', dom.codexTabSettings, dom.codexPaneSettings]
     ];
@@ -5299,6 +5628,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
       pane.hidden = !on;
     }
     if (which === 'archive') renderArchivePane();
+    if (which === 'findings') renderDiscoveryPane();
     if (which === 'settings') renderSettingsPane();
   }
 
@@ -6293,6 +6623,8 @@ body.tut-active .hud .intro-cue{opacity:.35;}
         addLog('SYS', '进入 ' + nextZone.cn + '。新目标：' + state.sectionTarget + ' 个归档。', 'quiet');
         // P17: each zone gets its own cast of background life.
         resetSeaLife(nextZone);
+        // P20: entering an unmapped layer may place one finding this dive.
+        rollDiscovery(nextZone);
       }
     }
   }
@@ -6756,6 +7088,11 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     Sound.setHullStress(0);
     state.particleBand = Math.floor(START_DEPTH / 100);
     state.narrativeFinaleScheduled = false;
+    // P20: a new dive gets a fresh roll; found ones stay found.
+    state.discovery = null;
+    state.diveFindingUsed = false;
+    state.findingRolledZones = {};
+    rollDiscovery(state.zone);
     state.nextAmbient = 32;
     state.nextSpawnAt = 38;
     state.lastContactLog = -99;
@@ -7237,11 +7574,13 @@ body.tut-active .hud .intro-cue{opacity:.35;}
   function init() {
     state.reduced = Boolean(reduceMedia && reduceMedia.matches);
     loadPersistentState();
+    loadDiscoveries();
     bindEvents();
     resizeScene();
     Sound.setZone(state.zone.id);
     makeParticles();
     generateInitialSignals();
+    rollDiscovery(state.zone);
     updateHud();
     drawRadar(0);
     renderScene(0);

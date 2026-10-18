@@ -124,6 +124,24 @@
     偶现 2–3 条垂直 1px 线结构剪影（占画面 <5%）。
     密度只改 count/尺寸参数不重建对象；全部受 lightExposureAt 影响换色；
     光锥扫过有反应且不写日志；reduced-motion 跳过逃离/收缩动态，保留受光变色。
+
+  v7 / P21 信号档案与知识框 —— 探索获得信息
+  P21.1 知识框（通用组件，P20 深渊发现物后续复用）：
+    showKnowledgeBox({title, text, quote}) → #knowledgeBox（fixed 中央偏上，
+    宽 ≤340px，像素边框，三段：标签行 / 描述段 / 评论段 glow 单行）。
+    点击任意处（window pointerdown capture，不阻断游戏输入）或 Esc 关闭，
+    8s 自动淡出；不捕获键盘、不遮挡 .ops；reduced-motion 无淡入。
+  P21.2 档案池：
+    11 条（WRK 3 / RUN 2 / ORG 2 / ECH 2 / VNT 2），文案按工单原文；
+    每个信号点由 seed（sig.phase）决定绑定条目（pickArchiveKey），归档成功时
+    若该条未解锁 → 解锁 + 弹框；同一信号不重复弹（sig.archiveShown），
+    不同信号可能绑同一条（先到先解锁）。
+  P21.3 图鉴存档：
+    覆盖层新增第四标签「信号档案」：按类型分组，已解锁显示三段全文，
+    未解锁「◇ 尚未解锁」，顶部「已解锁 N / 11」，全解锁底部收束行。
+    持久化 'abyssal.sigarchives.v1'。
+  P21.4 边界：不影响任何玩法数值，不参与 sectionArchived；与 DS-06 / P20 互不
+    混用；不新增色板、不新增 canvas 层、不改变信号绘制。
 -->
 <html lang="zh-CN">
 <head>
@@ -929,6 +947,46 @@ body.tut-active .hud .intro-cue{opacity:.35;}
   text-overflow:ellipsis;
 }
 .task-line.is-done{color:var(--glow);}
+/* ----- P21 知识框（临时 DOM 覆盖层，不捕获键盘，不遮挡 .ops） ----- */
+.knowledge-box{
+  position:fixed;
+  left:50%;
+  top:28%;
+  transform:translateX(-50%);
+  width:min(340px,calc(100vw - 24px));
+  padding:9px 12px 11px;
+  border:1px solid rgba(94,234,212,.4);
+  background:rgba(5,8,13,.93);
+  color:var(--haze);
+  font-size:9px;
+  line-height:1.65;
+  letter-spacing:.05em;
+  text-align:left;
+  opacity:0;
+  visibility:hidden;
+  transition:opacity .3s steps(3,end),visibility .3s;
+  pointer-events:none;
+  z-index:45;
+}
+.knowledge-box.is-on{opacity:1;visibility:visible;}
+.knowledge-box .kb-tag{
+  display:flex;
+  justify-content:space-between;
+  gap:8px;
+  padding-bottom:5px;
+  margin-bottom:6px;
+  border-bottom:1px solid var(--hair-dim);
+  color:var(--current);
+  font-size:8px;
+  letter-spacing:.14em;
+}
+.knowledge-box .kb-quote{
+  margin-top:7px;
+  padding-left:7px;
+  border-left:1px solid rgba(94,234,212,.5);
+  color:var(--glow);
+  letter-spacing:.1em;
+}
 /* ----- P10/P12 档案覆盖层（fixed 居中，底部留白避开 .ops） ----- */
 .codex-overlay{
   position:fixed;
@@ -1518,6 +1576,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
   .sig-label.is-on{animation:none!important;}
   .ctrl.is-attn{animation:none!important;}
   .tut-hint,.center-toast{transition:none!important;}
+  .knowledge-box{transition:none!important;}
   .codex-overlay{transition:none!important;}
   .hud .panel{transition:none!important;}
   .screen.is-tearing,
@@ -1686,17 +1745,25 @@ body.tut-active .hud .intro-cue{opacity:.35;}
   <div class="screen-edge" aria-hidden="true"></div>
   <div class="crt" aria-hidden="true"><span class="scanband"></span></div>
 
+  <div class="knowledge-box" id="knowledgeBox" role="status" aria-live="polite" hidden>
+    <div class="kb-tag"><span id="kbTitle"></span><span>档案</span></div>
+    <div class="kb-text" id="kbText"></div>
+    <div class="kb-quote" id="kbQuote"></div>
+  </div>
+
   <div class="codex-overlay" id="codexOverlay" role="dialog" aria-modal="true" aria-label="探勘档案" hidden>
     <div class="codex-panel">
       <header class="codex-head">
         <div class="codex-tabs" role="tablist" aria-label="档案标签页">
           <button class="codex-tab is-on" id="codexTabLog" type="button" role="tab" aria-selected="true">图鉴</button>
+          <button class="codex-tab" id="codexTabArchive" type="button" role="tab" aria-selected="false">信号档案</button>
           <button class="codex-tab" id="codexTabDossier" type="button" role="tab" aria-selected="false">DS-06 档案</button>
           <button class="codex-tab" id="codexTabSettings" type="button" role="tab" aria-selected="false">设置</button>
         </div>
         <button class="codex-close" id="codexClose" type="button">关闭 ESC</button>
       </header>
       <div class="codex-body" id="codexPaneLog" role="tabpanel" aria-label="图鉴"></div>
+      <div class="codex-body" id="codexPaneArchive" role="tabpanel" aria-label="信号档案" hidden></div>
       <div class="codex-body" id="codexPaneDossier" role="tabpanel" aria-label="DS-06 档案" hidden></div>
       <div class="codex-body" id="codexPaneSettings" role="tabpanel" aria-label="设置" hidden></div>
     </div>
@@ -1983,13 +2050,19 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     stressRow: $('#stressRow'),
     stressFill: $('#stressFill'),
     stressValue: $('#stressValue'),
+    knowledgeBox: $('#knowledgeBox'),
+    kbTitle: $('#kbTitle'),
+    kbText: $('#kbText'),
+    kbQuote: $('#kbQuote'),
     codexOverlay: $('#codexOverlay'),
     codexPanel: document.querySelector('.codex-panel'),
     codexTabLog: $('#codexTabLog'),
+    codexTabArchive: $('#codexTabArchive'),
     codexTabDossier: $('#codexTabDossier'),
     codexTabSettings: $('#codexTabSettings'),
     codexClose: $('#codexClose'),
     codexPaneLog: $('#codexPaneLog'),
+    codexPaneArchive: $('#codexPaneArchive'),
     codexPaneDossier: $('#codexPaneDossier'),
     codexPaneSettings: $('#codexPaneSettings'),
     codexBtn: $('#codexBtn'),
@@ -2051,6 +2124,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     p15: null, p15Count: 0, lastP15Id: '', lastP15At: -999,
     hudFrozenUntil: -1, p15GaugeRecovered: 5,
     turbidity: 1, tempBoost: 0, subsonicFlashUntil: -1, shadowField: null, bgScrollX: 0,
+    sigArchives: { unlocked: [] }, knowledgeOpen: false,
     battery: 100, batteryBand: 'ok',
     particleBand: Math.floor(START_DEPTH / 100),
     tutorial: {
@@ -4572,12 +4646,15 @@ body.tut-active .hud .intro-cue{opacity:.35;}
       recorded: false,
       spotted: false,
       labelVisible: false,
+      archiveKey: null,
+      archiveShown: false,
       el: null,
       markEl: null,
       codeEl: null
     };
     sig.sx = Math.round(sig.x * state.W);
     sig.sy = Math.round(sig.y * state.H);
+    sig.archiveKey = pickArchiveKey(sig);
     createSignalLabel(sig);
     state.signals.push(sig);
     return sig;
@@ -4889,6 +4966,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
   const ENCOUNTERS_KEY = 'abyssal.encounters.v1';
   const EVENTS_TOGGLE_KEY = 'abyssal.events.v1';
   const SENSORY_TOGGLE_KEY = 'abyssal.sensory.v1';
+  const SIG_ARCHIVES_KEY = 'abyssal.sigarchives.v1';
   const DS06_FINAL_TEXT = 'DS-06 记录：如果你读到这里，说明我停下的地方，你还在。';
   const DS06_RECORDS = [
     { id: 'type:ORG', group: 'type', text: 'DS-06 记录：该生物在光照下不逃逸。它只是看着。' },
@@ -4922,6 +5000,12 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     const storedVolume = loadStore(VOLUME_KEY, null);
     if (storedVolume === 'low' || storedVolume === 'mid' || storedVolume === 'high') {
       state.volume = storedVolume;
+    }
+    const sigArchives = loadStore(SIG_ARCHIVES_KEY, null);
+    if (sigArchives && Array.isArray(sigArchives.unlocked)) {
+      const valid = new Set(SIG_ARCHIVE_POOL.map((item) => item.key));
+      state.sigArchives.unlocked = sigArchives.unlocked
+        .filter((key) => typeof key === 'string' && valid.has(key));
     }
     const seenEncounters = loadStore(ENCOUNTERS_KEY, null);
     if (Array.isArray(seenEncounters)) {
@@ -4990,6 +5074,111 @@ body.tut-active .hud .intro-cue{opacity:.35;}
         !state.narrativeFinaleScheduled) {
       state.narrativeFinaleScheduled = true;
       later(3, fireNarrativeFinale);
+    }
+  }
+
+  /* ---------------------------------------------------------------------
+     P21: signal archives. Every contact carries one piece of hidden
+     history; archiving it is the reward. Same knowledge-box component
+     that P20 (abyssal findings) will reuse later.
+  --------------------------------------------------------------------- */
+  const SIG_ARCHIVE_POOL = [
+    { key: 'WRK-0', code: 'WRK', text: '1957 年，一艘运输导弹的货轮在这片海域失踪。船体编号与档案相符，货舱清单显示船上载有十二枚导弹。', quote: '看来深海有过一次自己的判断。' },
+    { key: 'WRK-1', code: 'WRK', text: '1944 年，一艘潜艇在执行秘密任务时消失。船上有一份从未送达的停战协议，签署日期比广岛早了十一天。', quote: '差十一天。有人不希望它送到。' },
+    { key: 'WRK-2', code: 'WRK', text: '1962 年 10 月，一艘苏联货船在古巴海域失踪。货舱清单写着特殊货物，残骸被找到时货舱是空的，舱门从内侧锁死。', quote: '人类离毁灭最近的时候，深海替我们按住了按钮。' },
+    { key: 'RUN-0', code: 'RUN', text: '石柱上的刻痕与已知文明的任何文字都不匹配。柱身的放射性衰变痕迹指向公元前 3000 年。', quote: '我们以为核能是二十世纪的发明。' },
+    { key: 'RUN-1', code: 'RUN', text: '遗迹内部有规律的敲击声，间隔 7 秒。翻译出来是：别挖太深。', quote: '有人在里面待过很久。' },
+    { key: 'ORG-0', code: 'ORG', text: '该生物体内检测到不属于地球同位素比例的元素。它只在核试验海域附近出现，不迁徙，只是在那里等着。', quote: '它们记得每一次爆炸。' },
+    { key: 'ORG-1', code: 'ORG', text: '这种生物在光照下不逃逸。它只是看着。检测显示它的眼睛对可见光的响应范围比人类宽三倍。', quote: '它看见的比我们多。' },
+    { key: 'ECH-0', code: 'ECH', text: '该回响的频率与 1945 年 8 月 6 日的电磁脉冲吻合。声呐捕捉到一段摩尔斯电码，翻译出来只有一个字：停。', quote: '有些声音永远不会停止。' },
+    { key: 'ECH-1', code: 'ECH', text: '回响的间隔在缩短，每次约 0.3 秒。按此速度，它会在某一次变成零。', quote: '它在靠近。' },
+    { key: 'VNT-0', code: 'VNT', text: '喷口附近的沉积物含有高浓度稀有金属。1950 年代曾有一支秘密勘探队在此作业，没有留下返回记录。', quote: '他们没有回来。热液还在冒。' },
+    { key: 'VNT-1', code: 'VNT', text: '热液脉动的节奏与人类心跳接近。1970 年代的一份档案称此处为有生命的海底，档案被封存了。', quote: '海底有东西在呼吸。' }
+  ];
+
+  function pickArchiveKey(sig) {
+    const pool = SIG_ARCHIVE_POOL.filter((item) => item.code === sig.type.code);
+    if (!pool.length) return null;
+    const seed = hash(sig.phase * 2.3 + sig.id * 0.77);
+    return pool[Math.floor(seed * pool.length) % pool.length].key;
+  }
+
+  let knowledgeTimer = 0;
+  function showKnowledgeBox(title, text, quote) {
+    if (!dom.knowledgeBox) return;
+    dom.kbTitle.textContent = title;
+    dom.kbText.textContent = text;
+    dom.kbQuote.textContent = quote;
+    dom.knowledgeBox.hidden = false;
+    state.knowledgeOpen = true;
+    window.requestAnimationFrame(() => dom.knowledgeBox.classList.add('is-on'));
+    if (knowledgeTimer) window.clearTimeout(knowledgeTimer);
+    knowledgeTimer = window.setTimeout(hideKnowledgeBox, 8000);
+  }
+
+  function hideKnowledgeBox() {
+    if (!state.knowledgeOpen) return;
+    state.knowledgeOpen = false;
+    if (knowledgeTimer) {
+      window.clearTimeout(knowledgeTimer);
+      knowledgeTimer = 0;
+    }
+    dom.knowledgeBox.classList.remove('is-on');
+    window.setTimeout(() => {
+      if (!state.knowledgeOpen) dom.knowledgeBox.hidden = true;
+    }, state.reduced ? 0 : 320);
+  }
+
+  // P21: fired the instant a signal is archived — the info IS the reward.
+  function showSignalArchive(sig) {
+    if (!sig || !sig.archiveKey) return;
+    const record = SIG_ARCHIVE_POOL.find((item) => item.key === sig.archiveKey);
+    if (!record) return;
+    if (state.sigArchives.unlocked.indexOf(record.key) !== -1) return;
+    state.sigArchives.unlocked.push(record.key);
+    saveStore(SIG_ARCHIVES_KEY, state.sigArchives);
+    showKnowledgeBox(sig.type.cn + ' · ' + sig.code, record.text, '「' + record.quote + '」');
+    if (state.codexOpen && !dom.codexPaneArchive.hidden) renderArchivePane();
+  }
+
+  function renderArchivePane() {
+    const pane = dom.codexPaneArchive;
+    if (!pane) return;
+    pane.textContent = '';
+    const counter = document.createElement('div');
+    counter.className = 'codex-meta';
+    counter.style.margin = '0 0 6px';
+    counter.style.borderTop = '0';
+    counter.style.paddingTop = '0';
+    counter.textContent = '已解锁 ' + state.sigArchives.unlocked.length + ' / ' + SIG_ARCHIVE_POOL.length;
+    pane.appendChild(counter);
+    for (const type of TYPES) {
+      const heading = document.createElement('div');
+      heading.className = 'codex-group-title';
+      heading.textContent = type.cn + ' / ' + type.en;
+      pane.appendChild(heading);
+      const entries = SIG_ARCHIVE_POOL.filter((item) => item.code === type.code);
+      for (const record of entries) {
+        const unlocked = state.sigArchives.unlocked.indexOf(record.key) !== -1;
+        const item = document.createElement('div');
+        item.className = 'dossier-item' + (unlocked ? '' : ' is-locked');
+        if (unlocked) {
+          item.textContent = record.text;
+          const quote = document.createElement('div');
+          quote.className = 'kb-quote';
+          quote.textContent = '「' + record.quote + '」';
+          item.appendChild(quote);
+        } else {
+          item.textContent = '◇ 尚未解锁';
+        }
+        pane.appendChild(item);
+      }
+    }
+    if (state.sigArchives.unlocked.length >= SIG_ARCHIVE_POOL.length) {
+      const tail = document.createElement('div');
+      tail.className = 'dossier-item is-final';
+      tail.textContent = '深海里还有更多被藏起来的事。';
+      pane.appendChild(tail);
     }
   }
 
@@ -5099,6 +5288,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     Sound.tool('tab');
     const tabs = [
       ['log', dom.codexTabLog, dom.codexPaneLog],
+      ['archive', dom.codexTabArchive, dom.codexPaneArchive],
       ['dossier', dom.codexTabDossier, dom.codexPaneDossier],
       ['settings', dom.codexTabSettings, dom.codexPaneSettings]
     ];
@@ -5108,6 +5298,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
       button.setAttribute('aria-selected', on ? 'true' : 'false');
       pane.hidden = !on;
     }
+    if (which === 'archive') renderArchivePane();
     if (which === 'settings') renderSettingsPane();
   }
 
@@ -5343,6 +5534,8 @@ body.tut-active .hud .intro-cue{opacity:.35;}
       sig.el.classList.add('is-archived');
       Sound.blip(sig);
       Sound.tool('recordSettle');
+      // P21: the archive pops immediately — reading it IS the reward.
+      showSignalArchive(sig);
       addLog('ARC', '归档 ' + sig.type.cn + ' / ' + sig.code + '。');
       if (sig.silentFind) {
         addLog('SYS', '静默发现 · 该生物只在无源环境下出现。', 'quiet');
@@ -6548,6 +6741,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
       Sound.setEncounterLP(null);
     }
     abortP15();
+    hideKnowledgeBox();
     state.turbidity = 1;
     state.tempBoost = 0;
     state.shadowField = null;
@@ -6910,6 +7104,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     }
     if (key === 'Escape' || key === 'Esc') {
       event.preventDefault();
+      hideKnowledgeBox();
       if (state.codexOpen) {
         closeCodex();
         return;
@@ -7004,8 +7199,14 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     });
     dom.codexBtn.addEventListener('click', () => toggleCodex());
     dom.codexClose.addEventListener('click', () => closeCodex());
+    dom.codexTabArchive.addEventListener('click', () => setCodexTab('archive'));
     dom.codexTabLog.addEventListener('click', () => setCodexTab('log'));
     dom.codexTabDossier.addEventListener('click', () => setCodexTab('dossier'));
+    // P21: any pointer press dismisses the knowledge box without eating the
+    // input — the game underneath keeps working.
+    window.addEventListener('pointerdown', () => {
+      if (state.knowledgeOpen) hideKnowledgeBox();
+    }, true);
     dom.codexOverlay.addEventListener('click', (event) => {
       if (event.target === dom.codexOverlay) closeCodex();
     });

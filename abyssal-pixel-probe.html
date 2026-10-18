@@ -1074,6 +1074,17 @@ body.tut-active .hud .intro-cue{opacity:.35;}
 .batt.is-crit .batt-bar i{background:var(--alert);}
 .batt.is-crit .batt-value,
 .batt.is-crit .batt-label{color:var(--alert);}
+/* P19.0 壳体应力条：与电量条同尺寸，颜色分三档 */
+.batt.is-stress-ok .batt-bar i{background:var(--current);}
+.batt.is-stress-ok .batt-value{color:var(--current);}
+.batt.is-stress-warn .batt-bar i{background:var(--glow);}
+.batt.is-stress-warn .batt-value{color:var(--glow);}
+.batt.is-stress-high .batt-bar i,
+.batt.is-stress-high .batt-value,
+.batt.is-stress-high .batt-label{background:var(--alert);color:var(--alert);}
+.batt.is-stress-high .batt-bar i{background:var(--alert);}
+/* P15.1 前兆：状态灯快闪 */
+.led i.is-blink{animation:blink .35s steps(1,end) infinite;}
 .sig-label{
   position:absolute;
   top:0;
@@ -1593,6 +1604,11 @@ body.tut-active .hud .intro-cue{opacity:.35;}
         <span class="batt-bar" aria-hidden="true"><i id="battFill"></i></span>
         <span class="batt-value" id="battValue">100</span>
       </div>
+      <div class="batt is-stress-ok" id="stressRow" role="img" aria-label="壳体应力 0%">
+        <span class="batt-label">HULL</span>
+        <span class="batt-bar" aria-hidden="true"><i id="stressFill"></i></span>
+        <span class="batt-value" id="stressValue">000</span>
+      </div>
     </section>
 
     <section class="panel status" id="statusPanel" aria-label="设备状态">
@@ -1964,6 +1980,9 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     battRow: $('#battRow'),
     battFill: $('#battFill'),
     battValue: $('#battValue'),
+    stressRow: $('#stressRow'),
+    stressFill: $('#stressFill'),
+    stressValue: $('#stressValue'),
     codexOverlay: $('#codexOverlay'),
     codexPanel: document.querySelector('.codex-panel'),
     codexTabLog: $('#codexTabLog'),
@@ -2025,6 +2044,13 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     nextWhisper: 24, deepBreathOn: false,
     volume: 'mid',
     seaLife: null,
+    hullStress: 0, hullStressBand: 'ok', stressLineUntil: -1, nextStressLine: 0,
+    encountersEnabled: true, sensoryEnabled: true,
+    encounter: null, encounterLog: [], eventPressure: 0,
+    lastEventAt: -600, encounterCooldownUntil: 0, lastEncounterId: '',
+    p15: null, p15Count: 0, lastP15Id: '', lastP15At: -999,
+    hudFrozenUntil: -1, p15GaugeRecovered: 5,
+    turbidity: 1, tempBoost: 0, subsonicFlashUntil: -1, shadowField: null, bgScrollX: 0,
     battery: 100, batteryBand: 'ok',
     particleBand: Math.floor(START_DEPTH / 100),
     tutorial: {
@@ -2124,8 +2150,23 @@ body.tut-active .hud .intro-cue{opacity:.35;}
         // P16: one-shot effects share their own bus (~1:3 against ambience).
         const fx = audio.createGain();
         fx.gain.value = this.fxBusBase();
-        fx.connect(master);
+        // P19.0: hull stress muffles the effects bus through this filter.
+        const fxLP = audio.createBiquadFilter();
+        fxLP.type = 'lowpass';
+        fxLP.frequency.value = 18000;
+        fx.connect(fxLP);
+        fxLP.connect(master);
         this.fx = fx;
+        this.fxLP = fxLP;
+
+        // P19: encounter-driven damping sits between master and the volume
+        // stage, so cliff dives can muffle everything at once.
+        const eventLP = audio.createBiquadFilter();
+        eventLP.type = 'lowpass';
+        eventLP.frequency.value = 18000;
+        master.connect(eventLP);
+        eventLP.connect(volGain);
+        this.eventLP = eventLP;
 
         // P18: tool feedback gets its own quiet lane and a dampable filter.
         const fxToolBus = audio.createGain();
@@ -2357,6 +2398,122 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     setDeepBreath(active) {
       if (!this.ctx || !this.deepBreath) return;
       this.deepBreath.gain.gain.setTargetAtTime(active ? 0.012 : 0, this.ctx.currentTime, 1.2);
+    },
+
+    // P15.2: the warning dips the hum bed; null restores the zone level.
+    setHumLevel(level) {
+      if (!this.ctx || !this.hum) return;
+      const spec = ZONE_AUDIO[this.zone] || ZONE_AUDIO.ABYSSAL;
+      const target = level === null
+        ? (this.quiet ? spec.humGain * 0.45 : spec.humGain)
+        : level;
+      this.hum.gain.gain.setTargetAtTime(target, this.ctx.currentTime, 0.5);
+    },
+
+    // P19.0: hull stress muffles fx and nudges the drones off key (±3 cents).
+    setHullStress(stress) {
+      if (!this.ctx) return;
+      const now = this.ctx.currentTime;
+      if (this.fxLP) {
+        const muffle = stress > 60
+          ? Math.max(4000, 18000 - (stress - 60) / 40 * 14000)
+          : 18000;
+        this.fxLP.frequency.setTargetAtTime(muffle, now, 0.6);
+      }
+      if (this.drones.length && this.stressDetuneApplied !== Math.round(stress)) {
+        this.stressDetuneApplied = Math.round(stress);
+        this.drones.forEach((drone, index) => {
+          const base = index ? 6 : -5;
+          const wobble = Math.sin(now * 0.6 + index * 2.1) * stress * 0.03;
+          drone.osc.detune.setTargetAtTime(base + wobble, now, 0.5);
+        });
+      }
+    },
+
+    // P19: encounter-driven damping for the whole output (cliff / upwelling).
+    setEncounterLP(hz) {
+      if (!this.ctx || !this.eventLP) return;
+      this.eventLP.frequency.setTargetAtTime(hz || 18000, this.ctx.currentTime, 0.25);
+    },
+
+    // P19: a held bed tone under long events; stopped and dropped at the end.
+    eventBed(type) {
+      if (!this.enabled || !this.ctx || !this.fx) return;
+      this.endEventBed();
+      const audio = this.ctx;
+      const t0 = audio.currentTime;
+      const gain = audio.createGain();
+      gain.gain.setValueAtTime(0.0001, t0);
+      const nodes = [gain];
+      if (type === 'rumble') {
+        const osc = audio.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.value = 35;
+        osc.connect(gain);
+        osc.start(t0);
+        gain.gain.linearRampToValueAtTime(0.05, t0 + 1.2);
+        nodes.push(osc);
+      } else if (type === 'bubbles') {
+        const length = Math.floor(audio.sampleRate * 1.2);
+        const buffer = audio.createBuffer(1, length, audio.sampleRate);
+        const channel = buffer.getChannelData(0);
+        for (let i = 0; i < length; i++) channel[i] = Math.random() * 2 - 1;
+        const source = audio.createBufferSource();
+        source.buffer = buffer;
+        source.loop = true;
+        const hp = audio.createBiquadFilter();
+        hp.type = 'highpass';
+        hp.frequency.value = 800;
+        source.connect(hp);
+        hp.connect(gain);
+        source.start(t0);
+        gain.gain.linearRampToValueAtTime(0.028, t0 + 1.2);
+        nodes.push(source, hp);
+      }
+      gain.connect(this.fx);
+      this.eventBedNodes = nodes;
+    },
+
+    endEventBed() {
+      const nodes = this.eventBedNodes;
+      this.eventBedNodes = null;
+      if (!nodes || !nodes.length || !this.ctx) return;
+      const gainNode = nodes.find((node) => node.gain && node.gain.setTargetAtTime);
+      if (gainNode) gainNode.gain.setTargetAtTime(0.0001, this.ctx.currentTime, 0.35);
+      window.setTimeout(() => {
+        for (const node of nodes) {
+          try { if (node.stop) node.stop(); } catch (error) { /* already stopped */ }
+          try { node.disconnect(); } catch (error) { /* already gone */ }
+        }
+      }, 900);
+    },
+
+    // P19: short accents inside long events (metal tick, bubble pop, swell).
+    eventAccent(kind) {
+      if (!this.enabled || !this.ctx || !this.fx) return;
+      const audio = this.ctx;
+      const t0 = audio.currentTime + 0.01;
+      const osc = audio.createOscillator();
+      const gain = audio.createGain();
+      osc.type = kind === 'bubble' ? 'sine' : 'triangle';
+      if (kind === 'tick') {
+        osc.frequency.setValueAtTime(1500, t0);
+        osc.frequency.exponentialRampToValueAtTime(1100, t0 + 0.04);
+        gain.gain.setValueAtTime(0.0001, t0);
+        gain.gain.exponentialRampToValueAtTime(0.012, t0 + 0.006);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.05);
+        osc.start(t0); osc.stop(t0 + 0.06);
+      } else {
+        osc.frequency.setValueAtTime(210, t0);
+        osc.frequency.exponentialRampToValueAtTime(330, t0 + 0.12);
+        gain.gain.setValueAtTime(0.0001, t0);
+        gain.gain.exponentialRampToValueAtTime(0.012, t0 + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.14);
+        osc.start(t0); osc.stop(t0 + 0.15);
+      }
+      osc.connect(gain);
+      gain.connect(this.fx);
+      this.track([osc, gain]);
     },
 
     // P16: same-name sounds inside a 3s window taper ×0.7 → ×0.4 → mute;
@@ -2833,8 +2990,10 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     const distance = Math.sqrt(dx * dx + dy * dy);
     // Deep water eats light; the same lamp reaches less far below 900 m.
     // P11: a fast dive also pulls the cone in a touch (max 5%).
+    // P19: turbidity scales the reach down live (not in steps).
     const range = beamRange() * (state.depth > 900 ? 0.9 : 1)
-      * (1 - clamp(Math.abs(state.depthVelocity), 0, 80) / 80 * 0.05);
+      * (1 - clamp(Math.abs(state.depthVelocity), 0, 80) / 80 * 0.05)
+      / Math.max(1, state.turbidity);
     if (distance < 2 || distance > range) return 0;
     const angle = Math.atan2(dy, dx);
     const diff = Math.abs(wrapAngle(angle - state.lamp.angle));
@@ -3078,6 +3237,8 @@ body.tut-active .hud .intro-cue{opacity:.35;}
 
     // Very sparse spill beyond the hard edge of the cone.
     if (!state.silent) {
+      // P19.0: above 70 stress the edge grain gets ~8% denser.
+      const spillGain = state.hullStress > 70 ? 1.08 : 1;
       for (let radius = 8; radius < range * 0.85; radius += 2.6) {
         const radial = Math.pow(1 - radius / range, 0.8);
         for (let side = -1; side <= 1; side += 2) {
@@ -3085,7 +3246,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
           const x = Math.round(ox + Math.cos(a) * radius);
           const y = Math.round(oy + Math.sin(a) * radius);
           if (x < 0 || y < 0 || x >= W || y >= H) continue;
-          if (bayer(x, y) < radial * 0.055) {
+          if (bayer(x, y) < radial * 0.055 * spillGain) {
             ctx.fillStyle = C.current;
             ctx.fillRect(x, y, 1, 1);
           }
@@ -3506,6 +3667,72 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     }
   }
 
+  // P19: a school crosses the frame, following the local gradient.
+  function drawMigration(now) {
+    const ev = state.encounter;
+    if (!ev || ev.id !== 'migration' || ev.t < ev.warn) return;
+    const W = state.W;
+    const H = state.H;
+    if (!ev.dots) ev.dots = [];
+    const last = ev.lastNow === undefined ? now : ev.lastNow;
+    const dt = clamp(now - last, 0, 0.2);
+    ev.lastNow = now;
+    while (ev.dots.length < ev.count) {
+      ev.dots.push({
+        x: (ev.dirX >= 0 ? -0.05 : 1.05) + Math.random() * 0.12,
+        y: 0.24 + Math.random() * 0.46,
+        vx: ev.dirX * (0.02 + Math.random() * 0.03),
+        vy: ev.dirY * (0.004 + Math.random() * 0.008),
+        phase: Math.random() * TAU
+      });
+    }
+    for (const dot of ev.dots) {
+      dot.x += dot.vx * dt;
+      dot.y += dot.vy * dt;
+      const px = Math.round(dot.x * W);
+      const py = Math.round(dot.y * H + Math.sin(now * 2 + dot.phase) * 1.5);
+      if (px < 0 || py < 0 || px >= W || py >= H) continue;
+      const exposure = lightExposureAt(px, py);
+      ctx.fillStyle = exposure > 0.2 ? C.current : exposure > 0.08 ? C.deep : C.pitch;
+      ctx.fillRect(px, py, 1, 1);
+    }
+  }
+
+  // P19: the vents fire embers that rise, stall, and fall back.
+  function drawEruption(now) {
+    const ev = state.encounter;
+    if (!ev || ev.id !== 'eruption' || ev.t < ev.warn) return;
+    const W = state.W;
+    const H = state.H;
+    if (!ev.dots) ev.dots = [];
+    const last = ev.lastNow === undefined ? now : ev.lastNow;
+    const dt = clamp(now - last, 0, 0.2);
+    ev.lastNow = now;
+    if (ev.dots.length < 26 && Math.random() < 0.5) {
+      const ventX = Math.random() < 0.5 ? 0.8 : 0.64;
+      ev.dots.push({
+        x: ventX + (Math.random() - 0.5) * 0.02,
+        y: 0.9,
+        vx: (Math.random() - 0.5) * 0.05 * ev.strength,
+        vy: -(0.06 + Math.random() * 0.09) * ev.strength
+      });
+    }
+    for (const dot of ev.dots) {
+      dot.vy += dt * 0.09;
+      dot.x += dot.vx * dt;
+      dot.y += dot.vy * dt;
+    }
+    ev.dots = ev.dots.filter((dot) => dot.y < 1.02);
+    for (const dot of ev.dots) {
+      const px = Math.round(dot.x * W);
+      const py = Math.round(dot.y * H);
+      if (px < 0 || py < 0 || px >= W || py >= H) continue;
+      const exposure = lightExposureAt(px, py);
+      ctx.fillStyle = exposure > 0.2 ? C.alert : C.ember;
+      ctx.fillRect(px, py, 1, 1);
+    }
+  }
+
   function drawMid(now) {
     drawFloor(now);
     drawRockMass(-0.03, 0.29, 0.19, 2.1, now);
@@ -3541,6 +3768,8 @@ body.tut-active .hud .intro-cue{opacity:.35;}
       }
     }
     drawSeaLife(now);
+    drawMigration(now);
+    drawEruption(now);
   }
 
   /* ---------------------------------------------------------------------
@@ -3775,6 +4004,18 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     if (live && Math.sin(now * 2.2) > -0.2) {
       ctx.fillStyle = C.glow;
       ctx.fillRect(x + 4, y - 1, 1, 1);
+    }
+
+    // P19.0: a hairline stress flash across the housing (0.1s, then gone).
+    if (state.stressLineUntil > now && !state.reduced) {
+      const ly = y + 8 + Math.round(hash(Math.floor(now * 20)) * 4);
+      const lx = x - 15 + Math.round(hash(Math.floor(now * 17)) * 6);
+      if (ly > 0 && ly < state.H) {
+        ctx.fillStyle = C.alert;
+        for (let i = 0; i < 26; i += 2) {
+          if (bayer(lx + i, ly) < 0.72) ctx.fillRect(lx + i, ly, 1, 1);
+        }
+      }
     }
   }
 
@@ -4036,6 +4277,37 @@ body.tut-active .hud .intro-cue{opacity:.35;}
       radarRing(cx, cy, 39, C.current, 0.8);
     }
 
+    // P19: an acoustic shadow reads as a hole in the coverage.
+    if (state.shadowField) {
+      const field = state.shadowField;
+      const holeAngle = (field.cx - 0.5) * 2.6;
+      for (let radius = 8; radius <= 40; radius += 2) {
+        for (let i = -3; i <= 3; i++) {
+          const a = holeAngle + i * 0.09;
+          const x = Math.round(cx + Math.cos(a) * radius);
+          const y = Math.round(cy + Math.sin(a) * radius);
+          if (x < 0 || y < 0 || x >= 96 || y >= 96) continue;
+          if (bayer(x, y) < 0.5) {
+            rctx.fillStyle = C.void;
+            rctx.fillRect(x, y, 1, 1);
+          }
+        }
+      }
+    }
+    // P19: a distant tremor throws unclickable ghost returns.
+    if (state.encounter && state.encounter.id === 'tremor' && state.encounter.t >= state.encounter.warn) {
+      const tremor = state.encounter;
+      for (let i = 0; i < 2; i++) {
+        const a = state.radarSweep + 1.1 + i * 0.5;
+        const r = 18 + ((tremor.t * 13 + i * 9) % 20);
+        const x = Math.round(cx + Math.cos(a) * r);
+        const y = Math.round(cy + Math.sin(a) * r);
+        rctx.fillStyle = C.current;
+        rctx.fillRect(x - 1, y, 3, 1);
+        rctx.fillRect(x, y - 1, 1, 3);
+      }
+    }
+
     // Forward marker and emitter.
     rctx.fillStyle = C.haze;
     rctx.fillRect(cx, cy - 2, 1, 1);
@@ -4052,15 +4324,35 @@ body.tut-active .hud .intro-cue{opacity:.35;}
      One canvas frame
   --------------------------------------------------------------------- */
   function renderScene(now) {
+    // P19: tremor shakes the whole frame via transform — no redraw.
+    let shake = null;
+    if (state.encounter && state.encounter.id === 'tremor' && !state.reduced) {
+      const ev = state.encounter;
+      const progress = clamp((ev.t - ev.warn) / ev.dur, 0, 1);
+      const amp = ev.mag * Math.sin(progress * Math.PI);
+      if (amp > 0.02) {
+        shake = {
+          x: Math.round(Math.sin(ev.t * 9) * amp * 2.2),
+          y: Math.round(Math.sin(ev.t * 7.3 + 1) * amp * 1.4)
+        };
+      }
+    }
     ensureBackdrop();
+    if (shake) {
+      ctx.save();
+      ctx.translate(shake.x, shake.y);
+    }
     if (state.bgCanvas) {
       const scroll = Math.round(state.bgScroll);
-      if (scroll !== 0) {
-        // P11: the water column slides one pixel against vertical motion.
-        ctx.drawImage(state.bgCanvas, 0, scroll);
+      const scrollX = Math.round(state.bgScrollX);
+      if (scroll !== 0 || scrollX !== 0) {
+        // P11/P19: the water column slides against vertical and lateral flow.
+        ctx.drawImage(state.bgCanvas, scrollX, scroll);
         ctx.fillStyle = C.void;
+        if (scrollX > 0) ctx.fillRect(0, 0, scrollX, state.H);
+        else if (scrollX < 0) ctx.fillRect(state.W + scrollX, 0, -scrollX, state.H);
         if (scroll > 0) ctx.fillRect(0, 0, state.W, scroll);
-        else ctx.fillRect(0, state.H + scroll, state.W, -scroll);
+        else if (scroll < 0) ctx.fillRect(0, state.H + scroll, state.W, -scroll);
       } else {
         ctx.drawImage(state.bgCanvas, 0, 0);
       }
@@ -4083,6 +4375,12 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     drawSonar(now);
     drawAnomaly(now);
     drawReticle(now);
+    if (shake) ctx.restore();
+    // P15.3: one dark blink as the pressure wave passes through.
+    if (state.subsonicFlashUntil > state.elapsed) {
+      ctx.fillStyle = 'rgba(5,8,13,0.4)';
+      ctx.fillRect(0, 0, state.W, state.H);
+    }
   }
 
   /* ---------------------------------------------------------------------
@@ -4121,11 +4419,14 @@ body.tut-active .hud .intro-cue{opacity:.35;}
   }
 
   // P11: fewer drifters the deeper the probe sits (200m→50, 1000m→30, 1400m→22).
+  // P19: turbidity temporarily thickens the column (never past 120 total).
   function particleTarget() {
     const depth = state.depth;
-    if (depth <= 200) return 50;
-    if (depth <= 1000) return Math.round(50 - (depth - 200) / 800 * 20);
-    return Math.round(30 - (depth - 1000) / 400 * 8);
+    let count;
+    if (depth <= 200) count = 50;
+    else if (depth <= 1000) count = 50 - (depth - 200) / 800 * 20;
+    else count = 30 - (depth - 1000) / 400 * 8;
+    return Math.round(Math.min(120, count * state.turbidity));
   }
 
   function makeParticles() {
@@ -4161,13 +4462,16 @@ body.tut-active .hud .intro-cue{opacity:.35;}
 
   function updateParticles(dt) {
     const speed = state.silent ? 0.42 : 1;
+    // P15.3: right before the subsonic shock, everything hangs still.
+    const frozen = state.p15 && state.p15.id === 'subsonic' && state.p15.t < 3.3;
+    const scale = frozen ? 0 : speed;
     // P11: a dive drags the snow column down, a rise lets it float back up.
     // Reduced-motion users get the calm version.
     const flow = state.reduced ? 0
       : 0.008 * (clamp(Math.abs(state.depthVelocity), 0, 80) / 80) * (state.depthVelocity >= 0 ? 1 : -1);
     for (const p of state.particles) {
-      p.x += (p.vx + Math.sin(state.elapsed * p.frequency + p.phase) * p.sway) * dt * speed;
-      p.y += (p.vy + (p.kind === 'snow' ? flow : 0)) * dt * speed;
+      p.x += (p.vx + Math.sin(state.elapsed * p.frequency + p.phase) * p.sway) * dt * scale;
+      p.y += (p.vy + (p.kind === 'snow' ? flow : 0)) * dt * scale;
       if (p.y < -0.04) {
         p.y = 1.03;
         p.x = Math.random();
@@ -4582,6 +4886,9 @@ body.tut-active .hud .intro-cue{opacity:.35;}
   const CODEX_KEY = 'abyssal.codex.v1';
   const DS06_KEY = 'abyssal.ds06.v1';
   const VOLUME_KEY = 'abyssal.volume.v1';
+  const ENCOUNTERS_KEY = 'abyssal.encounters.v1';
+  const EVENTS_TOGGLE_KEY = 'abyssal.events.v1';
+  const SENSORY_TOGGLE_KEY = 'abyssal.sensory.v1';
   const DS06_FINAL_TEXT = 'DS-06 记录：如果你读到这里，说明我停下的地方，你还在。';
   const DS06_RECORDS = [
     { id: 'type:ORG', group: 'type', text: 'DS-06 记录：该生物在光照下不逃逸。它只是看着。' },
@@ -4616,6 +4923,16 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     if (storedVolume === 'low' || storedVolume === 'mid' || storedVolume === 'high') {
       state.volume = storedVolume;
     }
+    const seenEncounters = loadStore(ENCOUNTERS_KEY, null);
+    if (Array.isArray(seenEncounters)) {
+      state.encounterLog = seenEncounters
+        .filter((id) => typeof id === 'string')
+        .slice(0, 6);
+    }
+    const eventsToggle = loadStore(EVENTS_TOGGLE_KEY, null);
+    if (eventsToggle === true || eventsToggle === false) state.encountersEnabled = eventsToggle;
+    const sensoryToggle = loadStore(SENSORY_TOGGLE_KEY, null);
+    if (sensoryToggle === true || sensoryToggle === false) state.sensoryEnabled = sensoryToggle;
     const codex = loadStore(CODEX_KEY, null);
     if (codex && typeof codex === 'object') {
       state.codex.types = (codex.types && typeof codex.types === 'object') ? codex.types : {};
@@ -4829,6 +5146,42 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     note.className = 'codex-meta';
     note.textContent = '音量上限恒定 · 不会超过设备安全电平';
     pane.appendChild(note);
+
+    // 批 4: two switches, both default on. Off means fully short-circuited.
+    const title2 = document.createElement('div');
+    title2.className = 'codex-group-title';
+    title2.textContent = '环境行为';
+    pane.appendChild(title2);
+    const toggles = [
+      ['环境事件', 'encountersEnabled', EVENTS_TOGGLE_KEY],
+      ['体感事件', 'sensoryEnabled', SENSORY_TOGGLE_KEY]
+    ];
+    for (const [label, field, key] of toggles) {
+      const row = document.createElement('div');
+      row.className = 'codex-row';
+      const keyEl = document.createElement('span');
+      keyEl.className = 'k';
+      keyEl.textContent = label;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'codex-tab' + (state[field] ? ' is-on' : '');
+      button.textContent = state[field] ? '开 · 点击关闭' : '关 · 点击开启';
+      button.addEventListener('click', () => {
+        state[field] = !state[field];
+        saveStore(key, state[field]);
+        if (field === 'encountersEnabled' && !state[field] && state.encounter) {
+          finishEncounter(null);
+        }
+        if (field === 'sensoryEnabled' && !state[field] && state.p15) {
+          abortP15();
+        }
+        Sound.tool('tab');
+        renderSettingsPane();
+      });
+      row.appendChild(keyEl);
+      row.appendChild(button);
+      pane.appendChild(row);
+    }
   }
 
   /* ---------------------------------------------------------------------
@@ -5117,12 +5470,14 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     const tenths = Math.round(depth * 10);
     const whole = Math.floor(tenths / 10);
     const decimal = tenths % 10;
-    const temp = temperatureAt(depth);
+    const temp = temperatureAt(depth) + (state.tempBoost || 0);
     const pressure = pressureAt(depth);
+    // P15.1: during the aftermath, gauges come back one at a time.
+    const gaugeMask = state.p15GaugeRecovered;
 
-    dom.depthValue.textContent = pad(whole, 4) + '.' + decimal;
-    dom.tempValue.textContent = pad(temp.toFixed(1), 4);
-    dom.pressValue.textContent = pad(pressure.toFixed(1), 4);
+    dom.depthValue.textContent = gaugeMask <= 0 ? '▓▒░' : pad(whole, 4) + '.' + decimal;
+    dom.tempValue.textContent = gaugeMask <= 1 ? '▓▒░' : pad(temp.toFixed(1), 4);
+    dom.pressValue.textContent = gaugeMask <= 2 ? '▓▒░' : pad(pressure.toFixed(1), 4);
     if (dom.depthMarker) dom.depthMarker.style.left = (clamp(depth / MAX_DEPTH * 100, 0, 100)).toFixed(2) + '%';
     dom.zoneEn.textContent = state.zone.en;
     dom.zoneCn.textContent = state.zone.cn;
@@ -5142,7 +5497,13 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     if (state.anomaly.active) level = 100;
     level = clamp(level, 0, 100);
 
-    dom.signalValue.textContent = state.anomaly.active ? 'ERR' : pad(Math.round(level), 3);
+    let displayedLevel = Math.round(level);
+    if (state.p15 && state.p15.id === 'gauges' && state.p15.t < 2) {
+      // P15.1 前兆：信号读数漂移。
+      displayedLevel = Math.round(clamp(level + Math.sin(state.elapsed * 7.3) * 14, 0, 100));
+    }
+    dom.signalValue.textContent = gaugeMask <= 3 ? '▓▒░'
+      : state.anomaly.active ? 'ERR' : pad(displayedLevel, 3);
     const bars = state.anomaly.active ? 6 : Math.round(level / 100 * 6);
     dom.meterBars.forEach((bar, index) => {
       bar.classList.toggle('on', index < bars);
@@ -5156,7 +5517,8 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     });
 
     const now = new Date();
-    dom.clock.textContent = pad(now.getUTCHours()) + ':' + pad(now.getUTCMinutes()) + ':' + pad(now.getUTCSeconds());
+    dom.clock.textContent = gaugeMask <= 4 ? '▓▒░:▓▒░:▓▒░'
+      : pad(now.getUTCHours()) + ':' + pad(now.getUTCMinutes()) + ':' + pad(now.getUTCSeconds());
 
     const anomaly = state.anomaly.active;
     dom.modeValue.classList.remove('quiet', 'ping', 'alert');
@@ -5228,6 +5590,415 @@ body.tut-active .hud .intro-cue{opacity:.35;}
       dom.battRow.classList.toggle('is-crit', state.batteryBand === 'crit');
       dom.battRow.setAttribute('aria-label', '电量 ' + battery + '%');
     }
+    // P19.0: hull stress bar, same size, three colour bands.
+    if (dom.stressFill) {
+      const stress = Math.round(state.hullStress);
+      dom.stressFill.style.width = stress + '%';
+      if (dom.stressValue) dom.stressValue.textContent = pad(stress, 3);
+      dom.stressRow.classList.toggle('is-stress-ok', state.hullStressBand === 'ok');
+      dom.stressRow.classList.toggle('is-stress-warn', state.hullStressBand === 'warn');
+      dom.stressRow.classList.toggle('is-stress-high', state.hullStressBand === 'high');
+      dom.stressRow.setAttribute('aria-label', '壳体应力 ' + stress + '%');
+    }
+  }
+
+  /* ---------------------------------------------------------------------
+     P19: the environment acts on its own. Nothing here punishes — the water
+     moves, the hull complains, and then everything goes back. Parameters
+     derive from live state, never from a script.
+  --------------------------------------------------------------------- */
+  const CLIFF_RANGE = { PHOTIC: [100, 250], TWILIGHT: [200, 400], ABYSSAL: [300, 500], HADAL: [400, 600] };
+
+  const ENCOUNTER_DEFS = [
+    { id: 'cliff', weight: () => 1, allow: () => state.depth > 200 && state.depth < 1395 },
+    {
+      id: 'upwelling',
+      weight: () => state.zone.id === 'TWILIGHT' || state.zone.id === 'ABYSSAL' ? 1.2
+        : state.zone.id === 'HADAL' ? 0.4 : 0.6,
+      allow: () => state.depth > 300
+    },
+    { id: 'current', weight: () => 1, allow: () => state.depth > 100 },
+    { id: 'turbidity', weight: () => 1, allow: () => (state.zone.id === 'ABYSSAL' || state.zone.id === 'HADAL') && state.depth > 400 },
+    { id: 'shadow', weight: () => 1, allow: () => !state.silent && state.depth > 200 && state.zone.id !== 'PHOTIC' },
+    { id: 'migration', weight: () => state.zone.id === 'HADAL' ? 0.5 : 1, allow: () => state.arms },
+    { id: 'eruption', weight: () => 1, allow: () => state.zone.id === 'ABYSSAL' },
+    { id: 'tremor', weight: () => 1, allow: () => (state.zone.id === 'ABYSSAL' || state.zone.id === 'HADAL') && state.depth > 600 }
+  ];
+
+  function computeUnease() {
+    const depthFactor = clamp(state.depth / 1400, 0, 1);
+    const stressFactor = clamp(state.hullStress / 100, 0, 1);
+    const silentFactor = state.silent ? 1 : 0;
+    const intervalFactor = clamp((state.elapsed - state.lastEventAt) / 600, 0, 1);
+    return depthFactor * 0.35 + stressFactor * 0.25 + silentFactor * 0.15 + intervalFactor * 0.25;
+  }
+
+  function updateHullStress(dt) {
+    const target = clamp((state.depth - 600) / 800 * 100, 0, 100);
+    if (state.hullStress < target) state.hullStress = Math.min(target, state.hullStress + 0.8 * dt);
+    else if (state.hullStress > target) state.hullStress = Math.max(target, state.hullStress - 0.8 * dt);
+    const band = state.hullStress > 75 ? 'high' : state.hullStress >= 40 ? 'warn' : 'ok';
+    if (band !== state.hullStressBand) {
+      state.hullStressBand = band;
+      Sound.setHullStress(state.hullStress);
+      updateHud();
+    } else if (state.elapsed - (state.lastStressAudio || 0) > 2) {
+      state.lastStressAudio = state.elapsed;
+      Sound.setHullStress(state.hullStress);
+    }
+    // Above 70 the hull flashes a hairline every few seconds (visual only).
+    if (!state.reduced && state.hullStress > 70 && state.elapsed >= state.nextStressLine) {
+      state.nextStressLine = state.elapsed + 3 + Math.random() * 2;
+      state.stressLineUntil = state.elapsed + 0.1;
+    }
+  }
+
+  function startEncounter(id) {
+    const zone = state.zone;
+    const ev = { id, t: 0, stressed: false, tickAcc: 0 };
+    if (id === 'cliff') {
+      const range = CLIFF_RANGE[zone.id] || [300, 500];
+      const distance = (range[0] + Math.random() * (range[1] - range[0])) * (0.8 + Math.random() * 0.4);
+      ev.distance = distance;
+      ev.termSpeed = 15 + state.hullStress * 0.07;
+      ev.endDepth = clamp(state.depth + distance, 0, MAX_DEPTH);
+      ev.dur = distance / (ev.termSpeed * 0.8);
+      ev.warn = 2.5;
+      Sound.eventBed('rumble');
+      addLog('DEP', '密度跃层前方。垂直水流增强。', 'quiet');
+    } else if (id === 'upwelling') {
+      const range = CLIFF_RANGE[zone.id] || [300, 500];
+      const distance = (range[0] + Math.random() * (range[1] - range[0])) * (0.8 + Math.random() * 0.4);
+      ev.distance = distance;
+      ev.termSpeed = 13 + state.hullStress * 0.05;
+      ev.endDepth = clamp(state.depth - distance, 0, MAX_DEPTH);
+      ev.dur = distance / (ev.termSpeed * 0.8);
+      ev.warn = 2.5;
+      Sound.eventBed('bubbles');
+      addLog('DEP', '深层流体上涌。读数向上。', 'quiet');
+    } else if (id === 'current') {
+      ev.dir = Math.random() < 0.5 ? -1 : 1;
+      ev.strength = 0.004 + Math.random() * 0.006;
+      ev.dur = 22 + Math.random() * 14;
+      ev.warn = 2;
+      addLog('CUR', '横向水流增强。位置读数将漂移。', 'quiet');
+    } else if (id === 'turbidity') {
+      ev.peak = 1.6 + (zone.id === 'HADAL' ? 0.5 : 0) + Math.random() * 0.4;
+      ev.dur = 24 + Math.random() * 16;
+      ev.warn = 2;
+      addLog('OPT', '浊流前方。可见度将下降。', 'quiet');
+    } else if (id === 'shadow') {
+      ev.cx = 0.25 + Math.random() * 0.5;
+      ev.width = 0.18 + Math.random() * 0.15;
+      ev.strength = 0.5 + Math.random() * 0.3;
+      ev.drift = (Math.random() < 0.5 ? -1 : 1) * 0.004;
+      ev.startDepth = state.depth;
+      ev.dur = 30 + Math.random() * 20;
+      ev.warn = 2.2;
+      addLog('SNR', '声学阴影成形。该方位回波将衰减。', 'quiet');
+    } else if (id === 'migration') {
+      const counts = { PHOTIC: 48, TWILIGHT: 38, ABYSSAL: 28, HADAL: 10 };
+      ev.count = counts[zone.id] || 30;
+      ev.dur = 30 + Math.random() * 20;
+      ev.warn = 2;
+      ev.dirX = Math.random() < 0.5 ? -1 : 1;
+      ev.dirY = zone.id === 'PHOTIC' ? 0.25 : zone.id === 'TWILIGHT' ? -0.1 : 0.05;
+      addLog('OPT', '生物群迁徙经过。密度计上升。', 'quiet');
+    } else if (id === 'eruption') {
+      ev.strength = 0.5 + Math.random() * 0.5;
+      ev.dur = 12 + ev.strength * 18;
+      ev.warn = 2;
+      ev.tempPeak = 4 + ev.strength * 6;
+      addLog('ENV', '热液喷发。温度读数上升。', 'quiet');
+    } else if (id === 'tremor') {
+      ev.mag = 0.4 + Math.random() * 0.6;
+      ev.dur = 4 + ev.mag * 6;
+      ev.warn = 1.2;
+      addLog('HUL', '远场震动抵达。幅度 ' + (ev.mag * 10).toFixed(1) + '。', 'quiet');
+    }
+    state.encounter = ev;
+    if (state.encounterLog.indexOf(id) === -1) {
+      state.encounterLog.push(id);
+      saveStore(ENCOUNTERS_KEY, state.encounterLog);
+    }
+    state.lastEncounterId = id;
+  }
+
+  function finishEncounter(logText, tag) {
+    const ev = state.encounter;
+    state.encounter = null;
+    state.lastEventAt = state.elapsed;
+    state.encounterCooldownUntil = state.elapsed + 300 + Math.random() * 180;
+    // P19.3: the water stays quiet for a full minute after an event.
+    state.anomaly.nextAt = Math.max(state.anomaly.nextAt, state.elapsed + 60);
+    Sound.endEventBed();
+    Sound.setEncounterLP(null);
+    if (ev && ev.id === 'turbidity') state.turbidity = 1;
+    if (ev && ev.id === 'shadow') state.shadowField = null;
+    if (ev && ev.id === 'eruption') state.tempBoost = 0;
+    if (logText) addLog(tag || 'SYS', logText, 'quiet');
+    updateHud();
+  }
+
+  function updateActiveEncounter(dt) {
+    const ev = state.encounter;
+    ev.t += dt;
+    // P19.0: the hull takes the hit the moment the event proper begins.
+    if (!ev.stressed && ev.t >= ev.warn) {
+      ev.stressed = true;
+      state.hullStress = Math.min(100, state.hullStress + 25);
+    }
+    if (ev.t < ev.warn) return;
+    const progress = clamp((ev.t - ev.warn) / ev.dur, 0, 1);
+    if (ev.id === 'cliff' || ev.id === 'upwelling') {
+      const dir = ev.id === 'cliff' ? 1 : -1;
+      ev.speed = (ev.speed || 0) + (ev.termSpeed - (ev.speed || 0)) * Math.min(1, dt * 0.8);
+      state.depth = clamp(state.depth + dir * ev.speed * dt, 0, MAX_DEPTH);
+      state.targetDepth = state.depth;
+      Sound.setEncounterLP(18000 - clamp(ev.speed / 25, 0, 1) * 12000);
+      ev.tickAcc += dt;
+      if (ev.tickAcc >= 0.8) {
+        ev.tickAcc = 0;
+        Sound.eventAccent(ev.id === 'cliff' ? 'tick' : 'bubble');
+      }
+      const arrived = ev.id === 'cliff'
+        ? state.depth >= ev.endDepth - 0.5
+        : state.depth <= ev.endDepth + 0.5;
+      if (arrived || progress >= 1) {
+        finishEncounter('稳定在 ' + pad(Math.round(state.depth), 4) + ' M。壳体正常。继续探勘。', 'DEP');
+      }
+    } else if (ev.id === 'current') {
+      const strength = progress > 0.7 ? ev.strength * (1 - (progress - 0.7) / 0.3) : ev.strength;
+      for (const sig of state.signals) {
+        sig.baseX = clamp(sig.baseX + ev.dir * strength * dt, 0.03, 0.97);
+      }
+      state.bgScrollX = clamp(state.bgScrollX + ev.dir * dt * 1.4, -1, 1);
+      // A light push on the lamp; the player's aim overrides it instantly.
+      state.lamp.angle += ev.dir * dt * 0.05;
+      if (progress >= 1) finishEncounter('洋流减弱。位置稳定。', 'CUR');
+    } else if (ev.id === 'turbidity') {
+      const rampIn = Math.min(1, progress * 4);
+      const rampOut = progress > 0.7 ? 1 - (progress - 0.7) / 0.3 : 1;
+      state.turbidity = 1 + (ev.peak - 1) * rampIn * rampOut;
+      if (progress >= 1) {
+        state.turbidity = 1;
+        finishEncounter('悬浮物沉降。可见度恢复。', 'OPT');
+      }
+    } else if (ev.id === 'shadow') {
+      ev.cx = clamp(ev.cx + ev.drift * dt, 0.1, 0.9);
+      state.shadowField = { cx: ev.cx, width: ev.width, strength: ev.strength };
+      if (progress >= 1 || Math.abs(state.depth - ev.startDepth) > 150) {
+        state.shadowField = null;
+        finishEncounter('声学阴影消散。', 'SNR');
+      }
+    } else if (ev.id === 'migration') {
+      // The dots advance inside drawMigration; ending is temporal.
+      if (progress >= 1) finishEncounter('迁徙结束。水层恢复空旷。', 'OPT');
+    } else if (ev.id === 'eruption') {
+      state.tempBoost = ev.tempPeak * Math.sin(progress * Math.PI);
+      ev.strength = clamp(ev.strength + Math.sin(ev.t * 0.35) * dt * 0.05, 0.35, 1);
+      if (progress >= 1) {
+        state.tempBoost = 0;
+        finishEncounter('喷发平息。温度回落。', 'ENV');
+      }
+    } else if (ev.id === 'tremor') {
+      if (progress >= 1) finishEncounter('震动波通过。结构完好。', 'HUL');
+    }
+  }
+
+  // P15: three short shocks. Same rules — no punishment, no blocked input.
+  function pickP15() {
+    const pool = ['gauges'];
+    if (state.depth > 600) {
+      pool.push('groan');
+      if (state.depth > 1200) pool.push('groan');
+    }
+    if (state.silent || state.depth > 1000) pool.push('subsonic');
+    const usable = pool.filter((id) => id !== state.lastP15Id);
+    if (!usable.length) return null;
+    return usable[Math.floor(Math.random() * usable.length)];
+  }
+
+  function startP15(id) {
+    state.p15 = { id, t: 0 };
+    state.p15Count += 1;
+    state.lastP15Id = id;
+    state.lastP15At = state.elapsed;
+    if (id === 'gauges') addLog('SYS', '传感器总线波动。读数正在漂移。', 'quiet');
+    if (id === 'groan') {
+      Sound.setHumLevel(0.02);
+      addLog('HUL', '壳体声音不对。检查应力。', 'quiet');
+    }
+    if (id === 'subsonic') addLog('SYS', '水柱安静得反常。', 'quiet');
+  }
+
+  function abortP15() {
+    state.p15 = null;
+    state.p15GaugeRecovered = 5;
+    state.hudFrozenUntil = -1;
+    Sound.setHumLevel(null);
+  }
+
+  function groanBurst() {
+    if (!Sound.enabled || !Sound.ctx || !Sound.fx) return;
+    const audio = Sound.ctx;
+    const t0 = audio.currentTime + 0.02;
+    const lp = audio.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 60;
+    const gain = audio.createGain();
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.linearRampToValueAtTime(0.14, t0 + 0.3);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 1.4);
+    lp.connect(gain);
+    gain.connect(Sound.fx);
+    const oscs = [];
+    [28, 41].forEach((frequency) => {
+      const osc = audio.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.value = frequency;
+      osc.connect(lp);
+      osc.start(t0);
+      osc.stop(t0 + 1.45);
+      oscs.push(osc);
+    });
+    Sound.track([lp, gain].concat(oscs));
+  }
+
+  function subsonicBurst() {
+    if (!Sound.enabled || !Sound.ctx || !Sound.fx) return;
+    const audio = Sound.ctx;
+    const t0 = audio.currentTime + 0.02;
+    const lp = audio.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 40;
+    const gain = audio.createGain();
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.linearRampToValueAtTime(0.12, t0 + 0.15);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.85);
+    lp.connect(gain);
+    gain.connect(Sound.fx);
+    const oscs = [];
+    [19, 23].forEach((frequency) => {
+      const osc = audio.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.value = frequency;
+      osc.connect(lp);
+      osc.start(t0);
+      osc.stop(t0 + 0.9);
+      oscs.push(osc);
+    });
+    const sub = audio.createOscillator();
+    const subGain = audio.createGain();
+    sub.type = 'sine';
+    sub.frequency.value = 35;
+    subGain.gain.setValueAtTime(0.0001, t0);
+    subGain.gain.linearRampToValueAtTime(0.1, t0 + 0.03);
+    subGain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.16);
+    sub.connect(subGain);
+    subGain.connect(Sound.fx);
+    sub.start(t0);
+    sub.stop(t0 + 0.18);
+    oscs.push(sub, subGain);
+    Sound.track([lp, gain].concat(oscs));
+  }
+
+  function updateP15Event(dt) {
+    const ev = state.p15;
+    ev.t += dt;
+    if (ev.id === 'gauges') {
+      // 前兆 2s → 冲击 1.2s（HUD 冻结、雷达停扫）→ 余波 4s 逐项恢复。
+      if (ev.t >= 2 && !ev.impactFlag) {
+        ev.impactFlag = true;
+        state.hudFrozenUntil = state.elapsed + 1.2;
+      }
+      state.p15GaugeRecovered = ev.t < 3.2
+        ? 0
+        : Math.min(5, Math.floor((ev.t - 3.2) / 0.4) + 1);
+      if (ev.t >= 7.2) {
+        state.p15GaugeRecovered = 5;
+        state.p15 = null;
+        addLog('SYS', '传感器总线重置。自检正常。', 'quiet');
+      }
+    } else if (ev.id === 'groan') {
+      if (ev.t >= 3 && !ev.impactFlag) {
+        ev.impactFlag = true;
+        groanBurst();
+        if (!state.reduced) state.stressLineUntil = state.elapsed + 0.3;
+      }
+      if (ev.t >= 4.4 && !ev.settleFlag) {
+        ev.settleFlag = true;
+        Sound.setHumLevel(null);
+      }
+      if (ev.t >= 9.4) {
+        state.p15 = null;
+        addLog('HUL', '壳体呻吟平息。当前压强 ' + pressureAt(state.depth).toFixed(1) + ' BAR。', 'quiet');
+      }
+    } else if (ev.id === 'subsonic') {
+      if (ev.t >= 2.5 && !ev.impactFlag) {
+        ev.impactFlag = true;
+        subsonicBurst();
+        if (!state.reduced) state.subsonicFlashUntil = state.elapsed + 0.08;
+      }
+      if (ev.t >= 6.3) {
+        state.p15 = null;
+        addLog('SYS', '记录到一次低频事件。来源不明。', 'quiet');
+      }
+    }
+  }
+
+  function updateEncounters(dt) {
+    if (state.encounter) {
+      updateActiveEncounter(dt);
+      return;
+    }
+    if (state.p15) {
+      updateP15Event(dt);
+      return;
+    }
+    if (!state.arms) return;
+    updateHullStress(dt);
+    const anyEnabled = state.encountersEnabled || state.sensoryEnabled;
+    if (!anyEnabled) return;
+    if (state.elapsed < state.encounterCooldownUntil) return;
+    // 触发概率由不安度累积推导，不是固定周期。
+    state.eventPressure += computeUnease() * dt * 0.0045;
+    if (state.eventPressure < 1) return;
+    state.eventPressure = 0;
+    const p15Allowed = state.sensoryEnabled && state.p15Count < 5 &&
+      state.elapsed - state.lastP15At >= 180;
+    const p19Allowed = state.encountersEnabled && state.encounterLog.length < 6;
+    const roll = Math.random();
+    if (p15Allowed && (!p19Allowed || roll < 0.4)) {
+      const id = pickP15();
+      if (id) {
+        startP15(id);
+        return;
+      }
+    }
+    if (p19Allowed) {
+      const candidates = ENCOUNTER_DEFS.filter((def) =>
+        def.allow() &&
+        state.encounterLog.indexOf(def.id) === -1 &&
+        def.id !== state.lastEncounterId);
+      if (candidates.length) {
+        const total = candidates.reduce((sum, def) => sum + def.weight(), 0);
+        let pick = Math.random() * total;
+        for (const def of candidates) {
+          pick -= def.weight();
+          if (pick <= 0) {
+            startEncounter(def.id);
+            return;
+          }
+        }
+        startEncounter(candidates[0].id);
+        return;
+      }
+    }
+    if (p15Allowed) {
+      const id = pickP15();
+      if (id) startP15(id);
+    }
   }
 
   /* ---------------------------------------------------------------------
@@ -5282,8 +6053,13 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     if (!state.reduced) {
       state.bgScroll = clamp(state.bgScroll + state.depthVelocity * dt * 0.05, -1.2, 1.2);
       if (Math.abs(state.depthVelocity) < 0.5) state.bgScroll *= Math.max(0, 1 - dt * 5);
+      // P19: lateral flow decays once the current lets go.
+      if (!state.encounter || state.encounter.id !== 'current') {
+        state.bgScrollX *= Math.max(0, 1 - dt * 2);
+      }
     } else {
       state.bgScroll = 0;
+      state.bgScrollX = 0;
     }
 
     // P11: particle population follows the depth a hundred metres at a time.
@@ -5411,8 +6187,16 @@ body.tut-active .hud .intro-cue{opacity:.35;}
         const distance = Math.hypot(sig.sx - state.probeX, sig.sy - (state.probeY - 6));
         if (distance > previous && distance <= state.sonar.radius + 1.2) {
           state.sonar.hitIds.add(sig.id);
-          sig.hold = Math.max(sig.hold, 4.4);
-          sig.sonarGlow = Math.max(sig.sonarGlow, 1.5);
+          // P19: contacts inside an acoustic shadow return a weaker echo.
+          let damp = 1;
+          if (state.shadowField) {
+            const field = state.shadowField;
+            if (Math.abs(sig.sx / state.W - field.cx) < field.width / 2) {
+              damp = 1 - field.strength * 0.6;
+            }
+          }
+          sig.hold = Math.max(sig.hold, 4.4 * damp);
+          sig.sonarGlow = Math.max(sig.sonarGlow, 1.5 * damp);
           sweepHits.push({ sig, distance });
         }
       }
@@ -5471,6 +6255,9 @@ body.tut-active .hud .intro-cue{opacity:.35;}
       state.silentBonusTimer = 0;
       spawnSilentFind();
     }
+    // P19: an eruption lights up whatever else is down there.
+    const eruption = state.encounter && state.encounter.id === 'eruption' &&
+      state.encounter.t >= state.encounter.warn;
 
     for (const sig of state.signals) {
       sig.x = sig.baseX + Math.sin(state.elapsed * sig.driftSpeed + sig.phase) * sig.driftX;
@@ -5487,6 +6274,7 @@ body.tut-active .hud .intro-cue{opacity:.35;}
       if (state.arms && !state.silent) {
         if (sig.lit > 0.11) sig.hold = Math.max(sig.hold, 2.1);
         if (pointerNear) sig.hold = Math.max(sig.hold, 1.35);
+        if (eruption) sig.hold = Math.max(sig.hold, 1.2);
         sig.hold = Math.max(0, sig.hold - dt * 2.2);
       } else {
         // Silence holds an optical label longer (1.0 vs 2.2), so the screen
@@ -5749,12 +6537,29 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     if (state.tutorial.active) TUT.finish(false);
     hideToast();
     closeCodex();
-    // 电量氛围 / P11: a cold start refills the cell and stills the water.
+    // P19: reset the water, the hull, and anything mid-event. Cold and clean.
+    state.hullStress = 0;
+    state.hullStressBand = 'ok';
+    state.stressLineUntil = -1;
+    state.nextStressLine = 0;
+    if (state.encounter) {
+      state.encounter = null;
+      Sound.endEventBed();
+      Sound.setEncounterLP(null);
+    }
+    abortP15();
+    state.turbidity = 1;
+    state.tempBoost = 0;
+    state.shadowField = null;
+    state.subsonicFlashUntil = -1;
+    state.eventPressure = 0;
     state.depthVelocity = 0;
     state.bgScroll = 0;
+    state.bgScrollX = 0;
     state.battery = 100;
     state.batteryBand = 'ok';
     Sound.setBattery('ok');
+    Sound.setHullStress(0);
     state.particleBand = Math.floor(START_DEPTH / 100);
     state.narrativeFinaleScheduled = false;
     state.nextAmbient = 32;
@@ -5824,6 +6629,9 @@ body.tut-active .hud .intro-cue{opacity:.35;}
   function tick(dt) {
     state.elapsed += dt;
     updateTimers();
+    // P19 runs first: encounters move the water, and every downstream system
+    // (P11 velocity, zone changes, anchors) reads the new depth this frame.
+    updateEncounters(dt);
     updateDepth(dt);
     updateAim(dt);
     updateSonar(dt);
@@ -5839,13 +6647,14 @@ body.tut-active .hud .intro-cue{opacity:.35;}
     processNarrative();
     updateTyping(dt);
 
+    // P15.1: during the impact the HUD freezes and the radar stops sweeping.
     state.hudAcc += dt;
-    if (state.hudAcc >= 0.1) {
+    if (state.elapsed >= state.hudFrozenUntil && state.hudAcc >= 0.1) {
       state.hudAcc = 0;
       updateHud();
     }
     state.radarAcc += dt;
-    if (state.radarAcc >= 0.09) {
+    if (state.elapsed >= state.hudFrozenUntil && state.radarAcc >= 0.09) {
       state.radarAcc = 0;
       drawRadar(state.elapsed);
     }

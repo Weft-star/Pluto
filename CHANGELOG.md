@@ -4,6 +4,41 @@
 
 ---
 
+## v3 — 2026-10-18 · P6 首次引导 + P9 区段目标 + P8 静默收益
+
+**本轮核心**：「入口清晰 + 有方向 + 有奖励」。不引入资源耗尽惩罚、强制位移、归档拒绝条件、失败结局；未达成时一切操作照常。
+
+### P6 首次引导（TUT）
+
+- `state.tutorial{active, step, forceSig, bypassRange, forceLabel}`；`TUT.steps` 四步 `move → scan → archive → depth`，各带 `onEnter/check/onExit`。
+- 启动：`scheduleOpening` 3.2s `arms` 置位后查 `localStorage 'abyssal.tut.v1'`，未设则 `TUT.start()`；结束/跳过写标记，二次进入不再触发。
+- 首屏焦点：`generateInitialSignals` 给第一个信号打 `tutorialPin`（`updateSignals` 中 target 0.22，若隐若现）；第三步强制 `reveal=1 / sonarGlow=1.6 / hold=9999` 并 `bypassRange + forceLabel`，完成后恢复常规衰减。
+- 视觉：`body.tut-active` 压暗非目标面板（opacity .35，`.ops` 始终 1），目标加 `.tut-hl` outline glow；`#tutHint` fixed 底部居中单行、`pointer-events:none`、`aria-live` 播报。
+- 跳过：任意步骤按 `H`，或非目标区域点击 3 次（`handleTap → TUT.noteTap`）。**说明：本应用没有独立帮助面板，「打开帮助即跳过」这条路径不存在，以 H 键与三次无效点击替代。**
+- 无障碍：不锁焦点，Tab 仍可达全部按钮；reduced-motion 下无进入动画。
+
+### P9 区段目标
+
+- `state.sectionTarget=6 / sectionArchived / sectionDone`；`activateSignal` 归档计数。
+- 达标三重反馈：雷达全环常亮 3s（复用 `completeUntil`）+ 已归档信号闪烁（`completeFlashUntil`）+ `Sound.confirm()` + 日志「本区段测绘完成。DS-07 进入自由探勘。」+ 屏幕中央提示「区段测绘完成 · 6/6」2.6s。
+- `updateDepth` 跨 zone 重置计数并记「进入 [zone.cn]。新目标：6 个归档。」。
+- taskline 挂在**现有雷达面板内**（`.task-line`，不新增独立面板）：未完成「本区段 x/6」，完成后「本区段 6/6 · 自由探勘」。
+- 未达成不设门禁：换深度、探索、声呐全部照常。
+
+### P8 静默收益
+
+- `toggleSilent` 进入静默：`anomaly.nextAt = elapsed + 60~100`（异常打扰减半）、`silentBonusTimer = elapsed + 4~10`、屏幕提示「静默 · 稀有生物接近中」。
+- `updateSignals` 到期强制显形一个 ORG 信号（`silentFind`，`reveal=1, hold=8`）——优先复用现有未归档 ORG，否则新建（允许超出 6 上限，保证「静默 5–10 秒内出现」的承诺）；日志 + 中央提示「静默发现 · 发光生物群」。
+- 归档 `silentFind` 时额外日志「静默发现 · 该生物只在无源环境下出现。」，无其他门槛、无数值奖励。
+- `silentFind` 豁免 P4「远距离需声呐确认」门（静默中无法声呐，不设归档拒绝条件）。
+- 解除静默清零计时器；非静默绝不出现该生物。静默期间移动光标、调深度、查看已归档信号均不受影响。
+
+### 约束保持
+
+不新增色板、不新增外部资源；`tick()` 仅增调用不改结构；新增覆盖层 `#tutHint` / `#centerToast` 均 fixed、`pointer-events:none`、Esc 可关、不遮挡 `.ops`；文案保持短句仪器感。
+
+---
+
 ## v2 — 2026-10-18 · 音频可达性（R1）
 
 **起因**：v1 交付后用户反馈「没有声音」，且「没见到 AUDIO」。上一轮排查停在「按钮几何可见」，没有闭环。

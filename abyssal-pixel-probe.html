@@ -31,6 +31,34 @@
        setQuiet 压到 45%。低频叙事不变，只是补了扬声器能重放的那一段。
   R1 约束保持：仍单文件、无外部资源、12 色板、Bayer 抖动、tick() 主循环未改动；
        音频默认关闭；reduced-motion 下 .is-attn 动画关闭。
+
+  v3 / P6+P9+P8 —— 入口清晰 + 有方向 + 有奖励
+  P6 首次引导（TUT 状态机）：
+    state.tutorial{active,step,forceSig,bypassRange,forceLabel}；TUT.steps 四步
+    move→scan→archive→depth，各带 onEnter/check；scheduleOpening 3.3s 检查
+    localStorage 'abyssal.tut.v1' 未设则启动；完成/跳过（H 键或三次无效点击）
+    均写标记。首屏第一个信号 tutorialPin（若隐若现 0.22），第三步强制显形可归档。
+    body.tut-active 压暗非目标面板（.ops 始终 1），#tutHint 单行提示
+    aria-live 播报一次；不锁焦点；reduced-motion 无进入动画。
+    涉及：TUT、generateInitialSignals、updateSignals、updateLabels、
+    activateSignal、handleTap、onKeyDown、scheduleOpening。
+    说明：本应用没有独立"帮助"面板，故"打开帮助即跳过"这条路径不存在，
+    以 H 键与三次无效点击替代。
+  P9 区段目标：
+    state.sectionTarget=6 / sectionArchived / sectionDone；activateSignal 归档
+    计数，达标触发雷达全环 3s + 归档闪烁 + Sound.confirm() + 日志
+    「本区段测绘完成。DS-07 进入自由探勘。」+ 屏幕中央提示 2.6s；
+    updateDepth 跨 zone 重置计数并提示新目标；taskline 挂在现有雷达面板内
+    （不新增独立面板），实时显示「本区段 x/6」，完成后「· 自由探勘」。
+    未达成不设任何门禁，自由换深度不受影响。
+  P8 静默收益：
+    toggleSilent 进入时 anomaly.nextAt 推远（异常减半）、置 silentBonusTimer
+    4–10s；updateSignals 到期强制显形一个 ORG 信号（silentFind，reveal=1，
+    hold=8），日志 + 屏幕中央提示；归档时额外日志「该生物只在无源环境下出现」。
+    silentFind 不受 P4 远距离声呐确认门拦截（不设归档拒绝条件）。
+    非静默不出现；解除静默清零计时器。
+  约束保持：不新增色板/外部资源；tick() 只增调用不改结构；新增覆盖层
+    （#tutHint/#centerToast）均 fixed、pointer-events:none、Esc 可关、不遮挡 .ops。
 -->
 <html lang="zh-CN">
 <head>
@@ -767,6 +795,75 @@ svg{display:block;}
   letter-spacing:.16em;
 }
 .intro-cue .touch{display:none;}
+/* ----- P6 教程提示层 / P8·P9 中央提示（均 fixed、不参与 HUD 网格） ----- */
+.tut-hint{
+  position:fixed;
+  left:50%;
+  bottom:calc(58px + env(safe-area-inset-bottom));
+  max-width:min(560px,calc(100vw - 24px));
+  padding:7px 12px;
+  border-top:1px solid var(--hair-dim);
+  border-bottom:1px solid var(--hair-dim);
+  background:rgba(5,8,13,.66);
+  color:var(--haze);
+  font-size:9px;
+  line-height:1;
+  letter-spacing:.12em;
+  white-space:nowrap;
+  text-align:center;
+  opacity:0;
+  visibility:hidden;
+  transform:translateX(-50%);
+  transition:opacity .35s steps(3,end),visibility .35s;
+  pointer-events:none;
+  z-index:12;
+}
+.tut-hint.is-on{opacity:1;visibility:visible;}
+.tut-hint small{color:var(--shelf);font-size:7px;letter-spacing:.14em;margin-left:10px;}
+.center-toast{
+  position:fixed;
+  left:50%;
+  top:34%;
+  transform:translate(-50%,-50%);
+  max-width:min(480px,calc(100vw - 30px));
+  padding:10px 16px;
+  border:1px solid rgba(94,234,212,.34);
+  background:rgba(5,8,13,.8);
+  color:var(--foam);
+  font-size:11px;
+  line-height:1;
+  letter-spacing:.18em;
+  white-space:nowrap;
+  text-align:center;
+  opacity:0;
+  visibility:hidden;
+  transition:opacity .3s steps(3,end),visibility .3s;
+  pointer-events:none;
+  z-index:12;
+}
+.center-toast.is-on{opacity:1;visibility:visible;}
+/* P6 视觉权重：教程期间压暗非目标面板；.ops 始终保持 1 */
+.hud .panel{transition:opacity .45s steps(4,end);}
+body.tut-active .hud .panel:not(.tut-hl){opacity:.35;}
+body.tut-active .hud .masthead,
+body.tut-active .hud .cam-label,
+body.tut-active .hud .hints,
+body.tut-active .hud .intro-cue{opacity:.35;}
+.tut-hl{outline:1px solid var(--glow);outline-offset:2px;box-shadow:0 0 9px rgba(94,234,212,.22);}
+/* P9 区段目标行：挂在现有雷达面板内，不新增面板 */
+.task-line{
+  margin-top:5px;
+  padding-top:4px;
+  border-top:1px solid var(--hair-dim);
+  color:var(--current);
+  font-size:7px;
+  line-height:1;
+  letter-spacing:.1em;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.task-line.is-done{color:var(--glow);}
 .sig-label{
   position:absolute;
   top:0;
@@ -1199,6 +1296,8 @@ svg{display:block;}
   .boot-cursor{animation:none!important;}
   .sig-label.is-on{animation:none!important;}
   .ctrl.is-attn{animation:none!important;}
+  .tut-hint,.center-toast{transition:none!important;}
+  .hud .panel{transition:none!important;}
   .screen.is-tearing,
   .screen.is-anomaly{animation:none!important;}
   .boot-lines p{opacity:1!important;animation:none!important;}
@@ -1313,6 +1412,7 @@ svg{display:block;}
         <span class="radar-fwd">FWD</span>
       </div>
       <div class="radar-meta"><span id="echoCount">00 ECHO</span><span id="radarNote">PASSIVE SCAN</span></div>
+      <div class="task-line" id="taskLine">本区段 0/6</div>
     </aside>
 
     <div class="ops" aria-label="探头控制">
@@ -1342,6 +1442,9 @@ svg{display:block;}
       <span class="touch">单指拖拽照明 · 轻触发射声呐 · 双指调节深度</span>
       <small>MOVE TO AIM / PING TO MAP</small>
     </div>
+
+    <div class="tut-hint" id="tutHint" role="status" aria-live="polite"></div>
+    <div class="center-toast" id="centerToast" role="status" aria-live="polite"></div>
   </div>
 
   <div class="screen-edge" aria-hidden="true"></div>
@@ -1614,6 +1717,9 @@ svg{display:block;}
     audioBtn: $('#audioBtn'),
     audioState: $('#audioState'),
     introCue: $('#introCue'),
+    taskLine: $('#taskLine'),
+    tutHint: $('#tutHint'),
+    centerToast: $('#centerToast'),
     live: $('#live'),
     tapeSegments: Array.from(document.querySelectorAll('.tape i')),
     meterBars: Array.from(document.querySelectorAll('#signalMeter i'))
@@ -1655,6 +1761,13 @@ svg{display:block;}
       x: 0.5, y: 0.3, seed: 0, ghostR: 0.55, ghostA: 0
     },
     completeUntil: 0, completeFlashUntil: 0,
+    sectionTarget: 6, sectionArchived: 0, sectionDone: false,
+    silentBonusTimer: 0,
+    tutorial: {
+      active: false, step: -1, forceSig: null,
+      bypassRange: false, forceLabel: false,
+      startDepth: 0, startX: 0, startY: 0, strayClicks: 0
+    },
     nextAmbient: 32,
     lastContactLog: -99, lastEchoLog: -99, lastQuietLog: -99,
     radarAcc: 0, hudAcc: 0,
@@ -3383,6 +3496,9 @@ svg{display:block;}
       }
       addSignal(types[i % types.length], position.x, position.y);
     }
+    // P6: while the tutorial is pending, pin the first contact so the third
+    // step always has something to point at. Returning players skip both.
+    if (!tutSeen() && state.signals.length) state.signals[0].tutorialPin = true;
   }
 
   function spawnRandomSignal(announce = true) {
@@ -3409,6 +3525,223 @@ svg{display:block;}
     updateHud();
     return sig;
   }
+
+  /* ---------------------------------------------------------------------
+     P8/P9 shared: centre toast. Fixed, pointer-events none, Esc-closable.
+  --------------------------------------------------------------------- */
+  let toastTimer = 0;
+  function showToast(text, seconds = 2.2) {
+    if (!dom.centerToast) return;
+    dom.centerToast.textContent = text;
+    dom.centerToast.classList.add('is-on');
+    if (toastTimer) window.clearTimeout(toastTimer);
+    toastTimer = window.setTimeout(() => {
+      toastTimer = 0;
+      dom.centerToast.classList.remove('is-on');
+    }, Math.max(0.4, seconds) * 1000);
+  }
+  function hideToast() {
+    if (toastTimer) {
+      window.clearTimeout(toastTimer);
+      toastTimer = 0;
+    }
+    if (dom.centerToast) dom.centerToast.classList.remove('is-on');
+  }
+
+  /* ---------------------------------------------------------------------
+     P8: silence pays. One ORG contact forced visible after a quiet stretch.
+  --------------------------------------------------------------------- */
+  function spawnSilentFind() {
+    let sig = state.signals.find((item) => !item.recorded && item.type.code === 'ORG');
+    if (!sig) sig = state.signals.find((item) => !item.recorded);
+    if (!sig) {
+      const org = TYPES.find((item) => item.code === 'ORG');
+      const position = safePosition(state.portrait);
+      sig = addSignal(org, position.x, position.y);
+    }
+    sig.silentFind = true;
+    sig.reveal = 1;
+    sig.hold = 8;
+    addLog('OPT', '静默中发现发光群。归档可获得特殊记录。', 'quiet');
+    showToast('静默发现 · 发光生物群', 2.2);
+    updateHud();
+  }
+
+  /* ---------------------------------------------------------------------
+     P6: first-run tutorial. Four steps, each with onEnter / check / onExit.
+     Never traps focus, never blocks input, skippable with H or stray taps.
+  --------------------------------------------------------------------- */
+  const TUT_KEY = 'abyssal.tut.v1';
+  function tutSeen() {
+    try { return window.localStorage.getItem(TUT_KEY) === '1'; } catch (error) { return false; }
+  }
+  function tutMarkSeen() {
+    try { window.localStorage.setItem(TUT_KEY, '1'); } catch (error) { /* private mode: just skip */ }
+  }
+  function tutSetHint(text) {
+    if (!dom.tutHint) return;
+    if (text) {
+      dom.tutHint.textContent = '';
+      const main = document.createElement('span');
+      main.textContent = text;
+      const skipNote = document.createElement('small');
+      skipNote.textContent = 'H 跳过引导';
+      dom.tutHint.appendChild(main);
+      dom.tutHint.appendChild(skipNote);
+      dom.tutHint.classList.add('is-on');
+    } else {
+      dom.tutHint.textContent = '';
+      dom.tutHint.classList.remove('is-on');
+    }
+  }
+  function tutHighlight(el) {
+    if (el && el.classList) el.classList.add('tut-hl');
+  }
+  function tutClearHighlights() {
+    const nodes = document.querySelectorAll('.tut-hl');
+    for (const node of nodes) node.classList.remove('tut-hl');
+  }
+
+  const TUT = {
+    steps: [
+      {
+        id: 'move',
+        hint: '移动光标 · 牵引光锥',
+        onEnter() {
+          state.tutorial.startX = state.pointer.x;
+          state.tutorial.startY = state.pointer.y;
+        },
+        check() {
+          const pointer = state.pointer;
+          return pointer.hasAim && Math.hypot(pointer.x - state.tutorial.startX, pointer.y - state.tutorial.startY) > 15;
+        }
+      },
+      {
+        id: 'scan',
+        hint: 'SPACE / PING · 发射声呐',
+        onEnter() {
+          tutHighlight(dom.pingBtn);
+        },
+        check() {
+          return state.sonar.t > 0.05;
+        },
+        onExit() {
+          dom.pingBtn.classList.remove('tut-hl');
+        }
+      },
+      {
+        id: 'archive',
+        hint: '点击被标记的信号 · 完成归档',
+        onEnter() {
+          const tutorial = state.tutorial;
+          tutorial.bypassRange = true;
+          tutorial.forceLabel = true;
+          const sig = state.signals.find((item) => item.tutorialPin) || state.signals[0] || null;
+          tutorial.forceSig = sig;
+          if (sig) {
+            sig.reveal = 1;
+            sig.sonarGlow = 1.6;
+            sig.hold = 9999;
+            if (sig.el) sig.el.tabIndex = 0;
+            tutHighlight(sig.el);
+          }
+        },
+        check() {
+          const sig = state.tutorial.forceSig;
+          return Boolean(sig) && sig.recorded === true;
+        },
+        onExit() {
+          const sig = state.tutorial.forceSig;
+          if (sig) {
+            sig.hold = 5.5;
+            sig.tutorialPin = false;
+            if (sig.el) sig.el.classList.remove('tut-hl');
+          }
+        }
+      },
+      {
+        id: 'depth',
+        hint: '▲▼ / 滚轮 · 调整深度',
+        onEnter() {
+          state.tutorial.startDepth = state.targetDepth;
+          tutHighlight(dom.ascendBtn);
+          tutHighlight(dom.descendBtn);
+          tutHighlight(dom.statusPanel);
+        },
+        check() {
+          return Math.abs(state.targetDepth - state.tutorial.startDepth) >= 20;
+        },
+        onExit() {
+          dom.ascendBtn.classList.remove('tut-hl');
+          dom.descendBtn.classList.remove('tut-hl');
+          if (dom.statusPanel) dom.statusPanel.classList.remove('tut-hl');
+        }
+      }
+    ],
+
+    start() {
+      const tutorial = state.tutorial;
+      if (tutorial.active) return;
+      tutorial.active = true;
+      tutorial.step = -1;
+      tutorial.strayClicks = 0;
+      document.body.classList.add('tut-active');
+      this.advance();
+    },
+
+    advance() {
+      const tutorial = state.tutorial;
+      const previous = this.steps[tutorial.step];
+      if (previous && previous.onExit) previous.onExit();
+      tutorial.step += 1;
+      tutorial.strayClicks = 0;
+      if (tutorial.step >= this.steps.length) {
+        this.finish(true);
+        return;
+      }
+      const step = this.steps[tutorial.step];
+      if (step.onEnter) step.onEnter();
+      tutSetHint((tutorial.step + 1) + '/4 · ' + step.hint);
+    },
+
+    update() {
+      const tutorial = state.tutorial;
+      const step = this.steps[tutorial.step];
+      if (step && step.check && step.check()) this.advance();
+    },
+
+    noteTap(hit) {
+      const tutorial = state.tutorial;
+      const step = this.steps[tutorial.step];
+      if (!step) return;
+      if (step.id === 'scan') return; // a water tap here fires the sonar, which is the goal
+      if (step.id === 'archive') {
+        if (hit === tutorial.forceSig) return;
+        tutorial.strayClicks += 1;
+      } else if (!hit) {
+        tutorial.strayClicks += 1;
+      }
+      if (tutorial.strayClicks >= 3) this.finish(false);
+    },
+
+    finish(completed) {
+      const tutorial = state.tutorial;
+      if (!tutorial.active) return;
+      const step = this.steps[tutorial.step];
+      if (step && step.onExit) step.onExit();
+      tutorial.active = false;
+      tutorial.step = -1;
+      tutorial.forceSig = null;
+      tutorial.bypassRange = false;
+      tutorial.forceLabel = false;
+      tutClearHighlights();
+      document.body.classList.remove('tut-active');
+      tutSetHint('');
+      tutMarkSeen();
+      for (const sig of state.signals) sig.tutorialPin = false;
+      if (completed) addLog('SYS', '引导序列完成。DS-07 转入自由探勘。', 'quiet');
+    }
+  };
 
   /* ---------------------------------------------------------------------
      Labels follow the low-resolution signal positions without subpixel text.
@@ -3440,6 +3773,11 @@ svg{display:block;}
     };
     addVisible(state.selected);
     addVisible(state.hover);
+    // P6: the tutorial's forced signal always keeps its label, even in silence.
+    const tutorial = state.tutorial;
+    if (tutorial.active && tutorial.forceLabel && tutorial.forceSig) {
+      addVisible(tutorial.forceSig);
+    }
     for (const sig of candidates) addVisible(sig);
     const visibleSet = new Set(visible);
 
@@ -3540,7 +3878,12 @@ svg{display:block;}
 
   function activateSignal(sig) {
     if (!sig || !sig.el || !state.arms) return;
-    if (!sig.recorded && sig.rangeM > 160 && sig.sonarGlow <= 0) {
+    // P4 gate: far contacts need an active sonar confirmation first. The
+    // tutorial's forced contact (P6) and the silence-only find (P8) are
+    // exempt — this round forbids new archive-refusal conditions.
+    const gateExempt = sig.silentFind ||
+      (state.tutorial.active && state.tutorial.bypassRange);
+    if (!gateExempt && !sig.recorded && sig.rangeM > 160 && sig.sonarGlow <= 0) {
       const message = '接触距离 ' + sig.rangeM + 'M，需主动声呐确认。';
       addLog('SNR', message, 'quiet');
       dom.live.textContent = message;
@@ -3559,18 +3902,23 @@ svg{display:block;}
       sig.el.classList.add('is-archived');
       Sound.blip();
       addLog('ARC', '归档 ' + sig.type.cn + ' / ' + sig.code + '。');
+      if (sig.silentFind) {
+        addLog('SYS', '静默发现 · 该生物只在无源环境下出现。', 'quiet');
+      }
       state.lastContactLog = state.elapsed;
-      const archived = state.signals.filter((item) => item.recorded).length;
-      if (archived === state.signals.length) {
-        // Only claim the archive is full when all six channels are actually occupied.
-        const full = state.signals.length >= 6;
-        if (full) {
-          state.completeUntil = state.elapsed + 3;
-          state.completeFlashUntil = state.elapsed + 1.2;
-          Sound.confirm();
-          addLog('SYS', '近场六个接触全部归档。DS-07 完成本区段测绘。', 'quiet');
-          dom.live.textContent = '近场六个接触全部归档。DS-07 完成本区段测绘。';
-        } else {
+      // P9: one section, six archives, then free survey until the next zone.
+      state.sectionArchived += 1;
+      if (!state.sectionDone && state.sectionArchived >= state.sectionTarget) {
+        state.sectionDone = true;
+        state.completeUntil = state.elapsed + 3;
+        state.completeFlashUntil = state.elapsed + 1.2;
+        Sound.confirm();
+        addLog('SYS', '本区段测绘完成。DS-07 进入自由探勘。', 'quiet');
+        dom.live.textContent = '本区段测绘完成。DS-07 进入自由探勘。';
+        showToast('区段测绘完成 · ' + state.sectionArchived + '/' + state.sectionTarget, 2.6);
+      } else {
+        const archived = state.signals.filter((item) => item.recorded).length;
+        if (archived === state.signals.length) {
           state.nextSpawnAt = Math.min(state.nextSpawnAt, state.elapsed + 19);
           later(1.1, () => addLog('SYS', '全部回波归档。等待新的接触。', 'quiet'));
         }
@@ -3760,6 +4108,13 @@ svg{display:block;}
     dom.radarTag.textContent = anomaly ? 'ERR / ???' : state.silent ? 'R 000M' : 'R 240M';
     dom.radarNote.textContent = anomaly ? 'UNRESOLVED' : state.silent ? 'EMISSION 0'
       : state.sonar.active ? 'PULSE ACTIVE' : 'PASSIVE SCAN';
+    // P9: the section tally lives inside the existing radar panel.
+    if (dom.taskLine) {
+      dom.taskLine.textContent = state.sectionDone
+        ? '本区段 ' + state.sectionTarget + '/' + state.sectionTarget + ' · 自由探勘'
+        : '本区段 ' + Math.min(state.sectionArchived, state.sectionTarget) + '/' + state.sectionTarget;
+      dom.taskLine.classList.toggle('is-done', state.sectionDone);
+    }
   }
 
   /* ---------------------------------------------------------------------
@@ -3802,6 +4157,10 @@ svg{display:block;}
         addLog('DEP', '进入 ' + nextZone.cn + ' / ' + nextZone.en + ' ZONE。', 'dep');
         dom.live.textContent = '进入' + nextZone.cn + '，当前深度' + Math.round(state.depth) + '米。';
         Sound.thump();
+        // P9: every zone is its own survey leg. A fresh count, never a gate.
+        state.sectionArchived = 0;
+        state.sectionDone = false;
+        addLog('SYS', '进入 ' + nextZone.cn + '。新目标：' + state.sectionTarget + ' 个归档。', 'quiet');
       }
     }
   }
@@ -3915,6 +4274,14 @@ svg{display:block;}
     const hoverRadius = state.portrait ? 15 : 11;
     const depthPenalty = state.depth > 1150 ? 0.67 : state.depth > 900 ? 0.85 : 1;
 
+    // P6: the tutorial advances on its own checks, one evaluation per frame.
+    if (state.tutorial.active) TUT.update();
+    // P8: after a quiet stretch, one glowing organism drifts into view.
+    if (state.silent && state.silentBonusTimer > 0 && state.elapsed >= state.silentBonusTimer) {
+      state.silentBonusTimer = 0;
+      spawnSilentFind();
+    }
+
     for (const sig of state.signals) {
       sig.x = sig.baseX + Math.sin(state.elapsed * sig.driftSpeed + sig.phase) * sig.driftX;
       sig.y = sig.baseY + Math.cos(state.elapsed * sig.driftSpeed * 0.63 + sig.phase * 1.7) * sig.driftY;
@@ -3940,6 +4307,7 @@ svg{display:block;}
       let target = 0;
       if (state.arms && (sig.hold > 0 || (!state.silent && (sig.lit > 0.08 || sig.sonarGlow > 0.08)))) target = 1;
       else if (sig.recorded) target = 0.22;
+      else if (sig.tutorialPin) target = 0.22; // P6: first contact stays half-there
       const speed = (target > sig.reveal ? 4.8 : 1.35) * depthPenalty;
       sig.reveal += (target - sig.reveal) * Math.min(1, dt * speed);
       sig.reveal = clamp(sig.reveal, 0, 1);
@@ -4083,9 +4451,15 @@ svg{display:block;}
       }
       Sound.setQuiet(true);
       addLog('SYS', '静默协议启用。主动扫描停止。', 'quiet');
+      // P8: quiet water pays. Push the anomaly away and start the stakeout.
+      state.anomaly.nextAt = state.elapsed + 60 + Math.random() * 40;
+      state.silentBonusTimer = state.elapsed + 4 + Math.random() * 6;
+      showToast('静默 · 稀有生物接近中', 2.2);
     } else {
       Sound.setQuiet(false);
       addLog('SYS', '静默协议解除。光学增益恢复。');
+      // P8: the find only exists while the probe stays quiet.
+      state.silentBonusTimer = 0;
     }
     dom.live.textContent = state.silent ? '静默模式开启。声呐停止，光锥变暗。' : '静默模式关闭。';
     updateLabels();
@@ -4164,6 +4538,11 @@ svg{display:block;}
     state.anomaly.logged = false;
     state.completeUntil = 0;
     state.completeFlashUntil = 0;
+    state.sectionArchived = 0;
+    state.sectionDone = false;
+    state.silentBonusTimer = 0;
+    if (state.tutorial.active) TUT.finish(false);
+    hideToast();
     state.nextAmbient = 32;
     state.nextSpawnAt = 38;
     state.lastContactLog = -99;
@@ -4202,6 +4581,9 @@ svg{display:block;}
       addLog('SYS', '光学阵列唤醒。当前深度 0688 米。');
       dom.live.textContent = '光学阵列唤醒。当前深度六百八十八米。';
       updateHud();
+      // P6: first visit gets the four-step walkthrough; returning players
+      // drop straight into the dark.
+      if (!tutSeen()) TUT.start();
     });
     later(4.9, showCue);
     later(6.6, () => addLog('OPT', '光锥稳定。未校准接触需人工确认。', 'quiet'));
@@ -4433,6 +4815,7 @@ svg{display:block;}
     const point = scenePoint(event.clientX, event.clientY);
     const touch = event.pointerType === 'touch';
     const hit = pickSignal(point.x, point.y, touch);
+    if (state.tutorial.active) TUT.noteTap(hit);
     if (hit) {
       activateSignal(hit);
     } else {
@@ -4479,6 +4862,15 @@ svg{display:block;}
       toggleAudio();
       return;
     }
+    if (key === 'h' || key === 'H') {
+      if (event.repeat) return;
+      if (state.tutorial.active) {
+        event.preventDefault();
+        TUT.finish(false);
+        addLog('SYS', '引导已跳过。', 'quiet');
+      }
+      return;
+    }
     if (key === 'r' || key === 'R') {
       if (event.repeat) return;
       event.preventDefault();
@@ -4492,6 +4884,7 @@ svg{display:block;}
       updateLabels();
       dom.live.textContent = '已取消选择。';
       hideCue();
+      hideToast();
       return;
     }
     if (key === 'ArrowUp') {
